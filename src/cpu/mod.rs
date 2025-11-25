@@ -47,7 +47,7 @@ impl Registers {
     }
 
     pub fn hl(&self) -> u16 {
-        ((self.h as u16) <<8) | (self.c as u16)
+        ((self.h as u16) <<8) | (self.l as u16)
     }
 
     pub fn set_hl(&mut self, value: u16) {
@@ -272,5 +272,104 @@ impl Cpu {
         self.registers.set_flag_carry(a < value);
         
         self.registers.a = result;
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_register_pairing() {
+        let mut registers = Registers::new();
+
+        // Test BC pairing
+        registers.b = 0x12;
+        registers.c = 0x34;
+        assert_eq!(registers.bc(), 0x1234);
+
+
+        registers.set_bc(0xABCD);
+        assert_eq!(registers.b, 0xAB);
+        assert_eq!(registers.c, 0xCD);
+
+        // Test DE pairing
+        registers.d = 0x56;
+        registers.e = 0x78;
+        assert_eq!(registers.de(), 0x5678);
+
+
+        registers.set_de(0xEF01);
+        assert_eq!(registers.d, 0xEF);
+        assert_eq!(registers.e, 0x01);
+
+        // Test HL pairing
+        registers.h = 0x9A;
+        registers.l = 0xBC;
+        assert_eq!(registers.hl(), 0x9ABC);
+
+
+        registers.set_hl(0x2345);
+        assert_eq!(registers.h, 0x23);
+        assert_eq!(registers.l, 0x45);
+    }
+
+    #[test]
+    fn test_flag_operations() {
+        let mut registers = Registers::new();
+
+        // All flags should start clear
+        assert_eq!(registers.f, 0);
+        assert!(!registers.flag_zero());
+        assert!(!registers.flag_subtract());
+        assert!(!registers.flag_half_carry());
+        assert!(!registers.flag_carry());
+
+        // Test zero flag
+        registers.set_flag_zero(true);
+        assert!(registers.flag_zero());
+        assert_eq!(registers.f & 0b1000_0000, 0b1000_0000);
+
+        registers.set_flag_zero(false);
+        assert!(!registers.flag_zero());
+
+        // Test subtract flag
+        registers.set_flag_subtract(true);
+        assert!(registers.flag_subtract());
+        assert_eq!(registers.f & 0b0100_0000, 0b0100_0000);
+
+        // Test half carry flag
+        registers.set_flag_half_carry(true);
+        assert!(registers.flag_half_carry());
+        assert_eq!(registers.f & 0b0010_0000, 0b0010_0000);
+        
+        // Test carry flag
+        registers.set_flag_carry(true);
+        assert!(registers.flag_carry());
+        assert_eq!(registers.f & 0b0001_0000, 0b0001_0000);
+
+        // Test multiple flags at once
+        registers.f = 0;
+        registers.set_flag_zero(true);
+        registers.set_flag_carry(true);
+        assert!(registers.flag_zero());
+        assert!(registers.flag_carry());
+        assert!(!registers.flag_subtract());
+        assert_eq!(registers.f, 0b1001_0000);
+    }
+
+    #[test]
+    fn test_flag_lower_bits_always_zero() {
+        let mut registers = Registers::new();
+
+        // Set all flags
+        registers.set_flag_zero(true);
+        registers.set_flag_subtract(true);
+        registers.set_flag_half_carry(true);
+        registers.set_flag_carry(true);
+
+        // Lower 4 bits should still be zero
+        assert_eq!(registers.f & 0x0F, 0);
     }
 }
