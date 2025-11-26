@@ -105,6 +105,72 @@ impl Registers {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Register {
+    A,
+    B,
+    C,
+    D,
+    E,
+    H,
+    L,
+}
+
+impl Register {
+    /// Get the value of this register from a CPU
+    pub fn get(&self, cpu: &Cpu) -> u8 {
+        match self {
+            Register::A => cpu.registers.a,
+            Register::B => cpu.registers.b,
+            Register::C => cpu.registers.c,
+            Register::D => cpu.registers.d,
+            Register::E => cpu.registers.e,
+            Register::H => cpu.registers.h,
+            Register::L => cpu.registers.l,
+        }
+    }
+
+    /// Set the value of this register in a CPU
+    pub fn set(&self, cpu: &mut Cpu, value: u8) {
+        match self {
+            Register::A => cpu.registers.a = value,
+            Register::B => cpu.registers.b = value,
+            Register::C => cpu.registers.c = value,
+            Register::D => cpu.registers.d = value,
+            Register::E => cpu.registers.e = value,
+            Register::H => cpu.registers.h = value,
+            Register::L => cpu.registers.l = value,
+        }
+    }
+
+    /// Get the name of this register as a string
+    pub fn name(&self) -> &'static str {
+        match self {
+            Register::A => "A",
+            Register::B => "B",
+            Register::C => "C",
+            Register::D => "D",
+            Register::E => "E",
+            Register::H => "H",
+            Register::L => "L",
+        }
+    }
+
+    /// Get all registers as an array (useful for iteration)
+    pub fn all() -> [Register; 7] {
+        [
+            Register::B,
+            Register::C,
+            Register::D,
+            Register::E,
+            Register::H,
+            Register::L,
+            Register::A,
+        ]
+    }
+}
+
+
 pub struct Cpu {
     pub registers: Registers,
     pub pc: u16, // Program Counter
@@ -204,21 +270,212 @@ impl Cpu {
                 self.cycles += 8;
             }
 
-            0x76 => {
-                self.halted = true;
+            // INC C - Increment C
+            0x0C => {
+                self.registers.c = self.alu_inc(self.registers.c);
                 self.cycles += 4;
+            }
+
+            // DEC C - Decrement C
+            0x0D => {
+                self.registers.c = self.alu_dec(self.registers.c);
+                self.cycles += 4;
+            }
+
+            // LD C, d8
+            0x0E => {  
+                self.registers.c = self.fetch_byte();
+                self.cycles += 8;
+            }
+
+            // INC D - Increment D
+            0x14 => {
+                self.registers.d = self.alu_inc(self.registers.d);
+                self.cycles += 4;
+            }
+
+            // DEC D - Decrement D
+            0x15 => {
+                self.registers.d = self.alu_dec(self.registers.d);
+                self.cycles += 4;
+            }
+
+            // LD D, d8
+            0x16 => { 
+                self.registers.d = self.fetch_byte();
+                self.cycles += 8;
+            }
+
+            // INC E - Increment E
+            0x1C => {
+                self.registers.e = self.alu_inc(self.registers.e);
+                self.cycles += 4;
+            }
+
+            // DEC E - Decrement E
+            0x1D => {
+                self.registers.e = self.alu_dec(self.registers.e);
+                self.cycles += 4;
+            }
+
+            // LD E, d8
+            0x1E => { 
+                self.registers.e = self.fetch_byte();
+                self.cycles += 8;
+            }
+
+            // INC H - Increment H
+            0x24 => {
+                self.registers.h = self.alu_inc(self.registers.h);
+                self.cycles += 4;
+            }
+
+            // DEC H - Decrement H
+            0x25 => {
+                self.registers.h = self.alu_dec(self.registers.h);
+                self.cycles += 4;
+            }
+
+            // LD H, d8
+            0x26 => { 
+                self.registers.h = self.fetch_byte();
+                self.cycles += 8;
+            }
+            
+            // INC L - Increment L
+            0x2C => {
+                self.registers.l = self.alu_inc(self.registers.l);
+                self.cycles += 4;
+            }
+
+            // DEC L - Decrement L
+            0x2D => {
+                self.registers.l = self.alu_dec(self.registers.l);
+                self.cycles += 4;
+            }
+
+            // LD L, d8
+            0x2E => { 
+                self.registers.l = self.fetch_byte();
+                self.cycles += 8;
+            }
+
+            // INC A - Increment A
+            0x3C => {
+                self.registers.a = self.alu_inc(self.registers.a);
+                self.cycles += 4;
+            }
+            
+            // DEC A - Decrement A
+            0x3D => {
+                self.registers.a = self.alu_dec(self.registers.a);
+                self.cycles += 4;
+            }
+
+            0x3E => {
+                self.registers.a = self.fetch_byte();
+                self.cycles += 8;
+            }
+
+            // LD r, r' family (0x40-0x7F) - Load register to register
+            0x40..=0x7F => {
+                // Special case: 0x76 is HALT (already implemented)
+                if opcode == 0x76 {
+                    self.halted = true;
+                    self.cycles += 4;
+                } else {
+                    // Decode source and destination from opcode
+                    let dest_idx = (opcode - 0x40) >> 3; // Upper 3 bits
+                    let src_idx = (opcode - 0x40) & 0x07; // Lower 3 bits
+                    
+                    // Get source value (index 6 means (HL) - memory)
+                    let value = match src_idx {
+                        0 => self.registers.b,
+                        1 => self.registers.c,
+                        2 => self.registers.d,
+                        3 => self.registers.e,
+                        4 => self.registers.h,
+                        5 => self.registers.l,
+                        6 => {
+                            let addr = self.registers.hl();
+                            self.memory.read_byte(addr)
+                        }
+                        7 => self.registers.a,
+                        _ => unreachable!(),
+                    };
+                    
+                    // Set destination value (index 6 means (HL) - memory)
+                    match dest_idx {
+                        0 => self.registers.b = value,
+                        1 => self.registers.c = value,
+                        2 => self.registers.d = value,
+                        3 => self.registers.e = value,
+                        4 => self.registers.h = value,
+                        5 => self.registers.l = value,
+                        6 => {
+                            let addr = self.registers.hl();
+                            self.memory.write_byte(addr, value);
+                        }
+                        7 => self.registers.a = value,
+                        _ => unreachable!(),
+                    };
+                    
+                    // Cycles: 4 for register-to-register, 8 if memory involved
+                    self.cycles += if src_idx == 6 || dest_idx == 6 { 8 } else { 4 };
+                }
             }
 
             0x80 => {
                 self.alu_add(self.registers.b);
                 self.cycles += 4;
             }
-            //...so I need to implement all 256 opcodes?
 
-            0x3E => {
-                self.registers.a = self.fetch_byte();
-                self.cycles += 8;
+            // ADD A, C
+            0x81 => {
+                self.alu_add(self.registers.c);
+                self.cycles += 4;
             }
+
+            // ADD A, D
+            0x82 => {
+                self.alu_add(self.registers.d);
+                self.cycles += 4;
+            }
+
+            // ADD A, E
+            0x83 => {
+                self.alu_add(self.registers.e);
+                self.cycles += 4;
+            }
+
+            // ADD A, H
+            0x84 => {
+                self.alu_add(self.registers.h);
+                self.cycles += 4;
+            }
+
+            // ADD A, L
+            0x85 => {
+                self.alu_add(self.registers.l);
+                self.cycles += 4;
+            }
+
+            // ADD A, (HL) - Add value from memory at address HL
+            0x86 => {
+                let address = self.registers.hl();
+                let value = self.memory.read_byte(address);
+                self.alu_add(value);
+                self.cycles += 8;  // Memory access takes 8 cycles
+            }
+
+            // ADD A, A
+            0x87 => {
+                self.alu_add(self.registers.a);
+                self.cycles += 4;
+            }
+
+
+            //...so I need to implement all 256 opcodes?
 
             _ => panic!("Unimplemented opcode: 0x{:02X} at PC: 0x{:04X}", opcode, self.pc -1),
         }
@@ -371,5 +628,257 @@ mod tests {
 
         // Lower 4 bits should still be zero
         assert_eq!(registers.f & 0x0F, 0);
+    }
+
+    fn test_register_enum_get_set() {
+        let mut cpu = Cpu::new();
+
+        // Test that the enum works as expected
+        Register::B.set(&mut cpu, 0x12);
+        assert_eq!(Register::B.get(&cpu), 0x12);
+        assert_eq!(cpu.registers.b, 0x12);
+
+        Register::A.set(&mut cpu, 0xFF);
+        assert_eq!(Register::A.get(&cpu), 0xFF);
+        assert_eq!(cpu.registers.a, 0xFF);
+
+    }
+}
+
+#[cfg(test)]
+mod instruction_tests {
+    use super::*;
+
+    // Helper function to create a CPU with a program loaded
+    fn setup_cpu(program: Vec<u8>) -> Cpu {
+        let mut cpu = Cpu::new();
+        cpu.memory.load_rom(&program);
+        cpu.pc = 0x0000; // Start from beginning for tests
+        cpu
+    }
+
+
+    #[test]
+    fn test_ld_r_n_family() {
+        struct TestCase {
+            opcode: u8,
+            value: u8,
+            register: Register,
+        }
+
+        let cases = vec![
+            TestCase { opcode: 0x06, value: 0x12, register: Register::B },
+            TestCase { opcode: 0x0E, value: 0x34, register: Register::C },
+            TestCase { opcode: 0x16, value: 0x56, register: Register::D },
+            TestCase { opcode: 0x1E, value: 0x78, register: Register::E },
+            TestCase { opcode: 0x26, value: 0x9A, register: Register::H },
+            TestCase { opcode: 0x2E, value: 0xBC, register: Register::L },
+            TestCase { opcode: 0x3E, value: 0xDE, register: Register::A },
+        ];
+
+        for case in cases {
+            let mut cpu = setup_cpu(vec![case.opcode, case.value]);
+            cpu.step();
+            assert_eq!(
+                case.register.get(&cpu),
+                case.value,
+                "Failed for LD {}, 0x{:02X}",
+                case.register.name(),
+                case.value
+            );
+            assert_eq!(cpu.cycles, 8)
+        }
+    
+    }
+
+    #[test]
+    fn test_ld_r_r_family() {
+        // Test LD r, r' instructions (0x40-0x7F, except 0x76 HALT)
+        
+        for dest in Register::all() {
+            for src in Register::all() {
+                // Calculate opcode: 0x40 + (dest * 8) + src
+                let dest_idx = match dest {
+                    Register::B => 0,
+                    Register::C => 1,
+                    Register::D => 2,
+                    Register::E => 3,
+                    Register::H => 4,
+                    Register::L => 5,
+                    Register::A => 7,
+                };
+
+                let src_idx = match src {
+                    Register::B => 0,
+                    Register::C => 1,
+                    Register::D => 2,
+                    Register::E => 3,
+                    Register::H => 4,
+                    Register::L => 5,
+                    Register::A => 7,
+                };
+
+                let opcode = 0x40 + (dest_idx * 8) + src_idx;
+                let test_value = 0x42 + src_idx;
+
+                let mut cpu = setup_cpu(vec![opcode]);
+
+                // Set source register
+                src.set(&mut cpu, test_value);
+
+                cpu.step();
+
+                // Check destination register
+                assert_eq!(
+                    dest.get(&cpu),
+                    test_value,
+                    "Failed for LD {}, {} (opcode 0x{:02X})",
+                    dest.name(),
+                    src.name(),
+                    opcode
+                );
+
+                assert_eq!(cpu.cycles, 4);
+            }
+        }
+    }
+
+    #[test]
+    fn test_inc_r_family() {
+        struct TestCase {
+            opcode: u8,
+            register: Register,
+        }
+
+        let cases = vec![
+            TestCase { opcode: 0x04, register: Register::B },
+            TestCase { opcode: 0x0C, register: Register::C },
+            TestCase { opcode: 0x14, register: Register::D },
+            TestCase { opcode: 0x1C, register: Register::E },
+            TestCase { opcode: 0x24, register: Register::H },
+            TestCase { opcode: 0x2C, register: Register::L },
+            TestCase { opcode: 0x3C, register: Register::A },
+        ];
+
+        for case in cases {
+            // Test normal increment
+            let mut cpu = setup_cpu(vec![case.opcode]);
+            case.register.set(&mut cpu, 0x42);
+            cpu.step();
+            assert_eq!(
+                case.register.get(&cpu),
+                0x43,
+                "Failed normal INC {}",
+                case.register.name()
+            );
+            assert!(!cpu.registers.flag_zero());
+
+            // Test increment with half-carry (0x0F -> 0x10)
+            let mut cpu = setup_cpu(vec![case.opcode]);
+            case.register.set(&mut cpu, 0x0F);
+            cpu.step();
+            assert_eq!(case.register.get(&cpu), 0x10);
+            assert!(
+                cpu.registers.flag_half_carry(),
+                "Failed zero flag for INC {}",
+                case.register.name()
+            );
+
+            // Test increment with zero (0xFF -> 0x00)
+            let mut cpu = setup_cpu(vec![case.opcode]);
+            case.register.set(&mut cpu, 0xFF);
+            cpu.step();
+            assert_eq!(case.register.get(&cpu), 0x00);
+            assert!(
+                cpu.registers.flag_zero(),
+                "Failed zero flag for INC {}",
+                case.register.name()
+            );
+        }
+
+    }
+ 
+    #[test]
+    fn test_dec_r_family() {
+        struct TestCase {
+            opcode: u8,
+            register: Register,
+        }
+
+        let cases = vec![
+            TestCase { opcode: 0x05, register: Register::B },
+            TestCase { opcode: 0x0D, register: Register::C },
+            TestCase { opcode: 0x15, register: Register::D },
+            TestCase { opcode: 0x1D, register: Register::E },
+            TestCase { opcode: 0x25, register: Register::H },
+            TestCase { opcode: 0x2D, register: Register::L },
+            TestCase { opcode: 0x3D, register: Register::A },
+        ];
+
+        for case in cases {
+            // Test normal increment
+            let mut cpu = setup_cpu(vec![case.opcode]);
+            case.register.set(&mut cpu, 0x42);
+            cpu.step();
+            assert_eq!(
+                case.register.get(&cpu),
+                0x41,
+                "Failed normal DEC {}",
+                case.register.name()
+            );
+            assert!(!cpu.registers.flag_zero());
+            assert!(cpu.registers.flag_subtract());
+
+            // Test decrement to zero
+            let mut cpu = setup_cpu(vec![case.opcode]);
+            case.register.set(&mut cpu, 0x01);
+            cpu.step();
+            assert_eq!(case.register.get(&cpu), 0x00);
+            assert!(
+                cpu.registers.flag_zero(),
+                "Failed zero flag for DEC {}",
+                case.register.name()
+            );
+        }
+
+    }
+
+    #[test]
+    fn test_add_a_r_family() {
+        // Test ADD with different registers (0x80-0x86)
+        for (idx, reg) in Register::all()[..6].iter().enumerate() { // Skip the last one (A)
+            let opcode = 0x80 + idx as u8;
+            
+            // Test normal addition
+            let mut cpu = setup_cpu(vec![opcode]);
+            Register::A.set(&mut cpu, 0x05);
+            reg.set(&mut cpu, 0x03);
+            cpu.step();
+            assert_eq!(Register::A.get(&cpu), 0x08, "Failed ADD A,{}", reg.name());
+            
+            // Test with carry
+            let mut cpu = setup_cpu(vec![opcode]);
+            Register::A.set(&mut cpu, 0xFF);
+            reg.set(&mut cpu, 0x02);
+            cpu.step();
+            assert_eq!(Register::A.get(&cpu), 0x01);
+            assert!(cpu.registers.flag_carry(), "Failed carry for ADD A,{}", reg.name());
+        }
+    }
+    
+    #[test]
+    fn test_add_a_a() {
+        // Special case: ADD A, A (0x87)
+        let mut cpu = setup_cpu(vec![0x87]);
+        Register::A.set(&mut cpu, 0x05);
+        cpu.step();
+        assert_eq!(Register::A.get(&cpu), 0x0A); // 0x05 + 0x05 = 0x0A
+        
+        // Test with carry
+        let mut cpu = setup_cpu(vec![0x87]);
+        Register::A.set(&mut cpu, 0xFF);
+        cpu.step();
+        assert_eq!(Register::A.get(&cpu), 0xFE); // 0xFF + 0xFF = 0x1FE -> 0xFE
+        assert!(cpu.registers.flag_carry());
     }
 }
