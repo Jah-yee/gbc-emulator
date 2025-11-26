@@ -113,7 +113,7 @@ impl Memory {
 
             // High RAM
             0xFF80..=0xFFFE => self.hram[(address - 0xFF80) as usize] = value,
-            
+
             // Interrupt Enable
             0xFFFF => self.ie_register = value,
         }
@@ -141,5 +141,107 @@ impl Memory {
             let bank_n_size = std::cmp::min(rom.len() - 0x4000, 0x4000);
             self.rom_bank_n[..bank_n_size].copy_from_slice(&rom[0x4000..0x4000 + bank_n_size]);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_memory_read_write() {
+        let mut memory = Memory::new();
+
+        // Test WRAM (Work RAM)
+        memory.write_byte(0xC000, 0x42);
+        assert_eq!(memory.read_byte(0xC000), 0x42);
+
+        memory.write_byte(0xDFFF, 0xFF);
+        assert_eq!(memory.read_byte(0xDFFF), 0xFF);
+
+        // Test HRAM (High RAM)
+        memory.write_byte(0xFF80, 0x12);
+        assert_eq!(memory.read_byte(0xFF80), 0x12);
+
+        memory.write_byte(0xFFFE, 0x34);
+        assert_eq!(memory.read_byte(0xFFFE), 0x34);
+
+        // Test Interrupt Enable Register
+        memory.write_byte(0xFFFF, 0b0001_1111);
+        assert_eq!(memory.read_byte(0xFFFF), 0b0001_1111);
+    }
+
+    #[test]
+    fn test_echo_ram_mirrors_wram() {
+        let mut memory = Memory::new();
+
+        // Write to WRAM
+        memory.write_byte(0xC000, 0xAB);
+
+        // Read from Echo RAM (should mirror)
+        assert_eq!(memory.read_byte(0xE000), 0xAB);
+
+        // Write to Echo RAM
+        memory.write_byte(0xE100, 0xCD);
+
+        // Read from WRAM (should be mirrored)
+        assert_eq!(memory.read_byte(0xC100), 0xCD)
+    }
+
+    #[test]
+    fn test_unusable_memory_returns_ff() {
+        let memory = Memory::new();
+        
+        // The range 0xFEA0-0xFEFF is not usable and should return 0xFF
+        for addr in 0xFEA0..=0xFEFF {
+            assert_eq!(memory.read_byte(addr), 0xFF);
+        }
+    }
+
+    #[test]
+    fn test_read_write_word() {
+        let mut memory = Memory::new();
+
+        // Write a 16-bit word
+        memory.write_word(0xC000, 0x1234);
+
+        // Check individual bytes (little-endian)
+        assert_eq!(memory.read_byte(0xC000), 0x34); // Low byte
+        assert_eq!(memory.read_byte(0xC001), 0x12); // High byte
+
+        // Read back as word
+        assert_eq!(memory.read_word(0xC000), 0x1234);
+    }
+
+    #[test]
+    fn test_rom_loading() {
+        let mut memory = Memory::new();
+
+        let rom = vec![
+            0x00, 0x01, 0x02, 0x03, // First few bytes
+            // ...imagine it continues
+        ];
+
+        memory.load_rom(&rom);
+
+        // Verify the ROM was loaded
+        assert_eq!(memory.read_byte(0x0000), 0x00);
+        assert_eq!(memory.read_byte(0x0001), 0x01);
+        assert_eq!(memory.read_byte(0x0002), 0x02);
+        assert_eq!(memory.read_byte(0x0003), 0x03);
+    }
+
+    #[test]
+    fn test_rom_is_read_only() {
+        let mut memory = Memory::new();
+
+        let rom = vec![0xAA; 0x8000]; // Fill ROM with 0xAA
+        memory.load_rom(&rom);
+
+        // Try to write to ROM
+        memory.write_byte(0x0000, 0x55);
+
+        // ROM should still contain original value
+        assert_eq!(memory.read_byte(0x0000), 0xAA);
     }
 }
