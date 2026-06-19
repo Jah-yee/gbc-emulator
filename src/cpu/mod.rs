@@ -11,25 +11,25 @@ pub struct Registers {
     pub d: u8,
     pub e: u8,
     pub h: u8,
-    pub l: u8
+    pub l: u8,
 }
 
 impl Registers {
     pub fn new() -> Self {
         Self {
-        a: 0,
-        f: 0,
-        b: 0,
-        c: 0,
-        d: 0,
-        e: 0,
-        h: 0,
-        l: 0
-        }   
+            a: 0,
+            f: 0,
+            b: 0,
+            c: 0,
+            d: 0,
+            e: 0,
+            h: 0,
+            l: 0,
+        }
     }
     // Helper methods to work with paired registers
     pub fn bc(&self) -> u16 {
-        ((self.b as u16) << 8 ) | (self.c as u16)
+        ((self.b as u16) << 8) | (self.c as u16)
     }
 
     pub fn set_bc(&mut self, value: u16) {
@@ -47,11 +47,11 @@ impl Registers {
     }
 
     pub fn hl(&self) -> u16 {
-        ((self.h as u16) <<8) | (self.l as u16)
+        ((self.h as u16) << 8) | (self.l as u16)
     }
 
     pub fn set_hl(&mut self, value: u16) {
-        self.h = (value >>8) as u8;
+        self.h = (value >> 8) as u8;
         self.l = value as u8;
     }
 
@@ -96,7 +96,7 @@ impl Registers {
         self.f & 0b0001_0000 != 0
     }
 
-    pub fn set_flag_carry(&mut self, set:bool) {
+    pub fn set_flag_carry(&mut self, set: bool) {
         if set {
             self.f |= 0b0001_0000;
         } else {
@@ -169,7 +169,6 @@ impl Register {
         ]
     }
 }
-
 
 pub struct Cpu {
     pub registers: Registers,
@@ -283,7 +282,7 @@ impl Cpu {
             }
 
             // LD C, d8
-            0x0E => {  
+            0x0E => {
                 self.registers.c = self.fetch_byte();
                 self.cycles += 8;
             }
@@ -301,7 +300,7 @@ impl Cpu {
             }
 
             // LD D, d8
-            0x16 => { 
+            0x16 => {
                 self.registers.d = self.fetch_byte();
                 self.cycles += 8;
             }
@@ -319,7 +318,7 @@ impl Cpu {
             }
 
             // LD E, d8
-            0x1E => { 
+            0x1E => {
                 self.registers.e = self.fetch_byte();
                 self.cycles += 8;
             }
@@ -337,11 +336,11 @@ impl Cpu {
             }
 
             // LD H, d8
-            0x26 => { 
+            0x26 => {
                 self.registers.h = self.fetch_byte();
                 self.cycles += 8;
             }
-            
+
             // INC L - Increment L
             0x2C => {
                 self.registers.l = self.alu_inc(self.registers.l);
@@ -355,7 +354,7 @@ impl Cpu {
             }
 
             // LD L, d8
-            0x2E => { 
+            0x2E => {
                 self.registers.l = self.fetch_byte();
                 self.cycles += 8;
             }
@@ -365,7 +364,7 @@ impl Cpu {
                 self.registers.a = self.alu_inc(self.registers.a);
                 self.cycles += 4;
             }
-            
+
             // DEC A - Decrement A
             0x3D => {
                 self.registers.a = self.alu_dec(self.registers.a);
@@ -387,7 +386,7 @@ impl Cpu {
                     // Decode source and destination from opcode
                     let dest_idx = (opcode - 0x40) >> 3; // Upper 3 bits
                     let src_idx = (opcode - 0x40) & 0x07; // Lower 3 bits
-                    
+
                     // Get source value (index 6 means (HL) - memory)
                     let value = match src_idx {
                         0 => self.registers.b,
@@ -403,7 +402,7 @@ impl Cpu {
                         7 => self.registers.a,
                         _ => unreachable!(),
                     };
-                    
+
                     // Set destination value (index 6 means (HL) - memory)
                     match dest_idx {
                         0 => self.registers.b = value,
@@ -419,7 +418,7 @@ impl Cpu {
                         7 => self.registers.a = value,
                         _ => unreachable!(),
                     };
-                    
+
                     // Cycles: 4 for register-to-register, 8 if memory involved
                     self.cycles += if src_idx == 6 || dest_idx == 6 { 8 } else { 4 };
                 }
@@ -465,7 +464,7 @@ impl Cpu {
                 let address = self.registers.hl();
                 let value = self.memory.read_byte(address);
                 self.alu_add(value);
-                self.cycles += 8;  // Memory access takes 8 cycles
+                self.cycles += 8; // Memory access takes 8 cycles
             }
 
             // ADD A, A
@@ -474,10 +473,360 @@ impl Cpu {
                 self.cycles += 4;
             }
 
+            // ADC A, B
+            0x88 => {
+                self.alu_adc(self.registers.b);
+                self.cycles += 4;
+            }
+
+            // ADC A,C
+            0x89 => {
+                self.alu_adc(self.registers.c);
+                self.cycles += 4;
+            }
+
+            // ADC A,D
+            0x8A => {
+                self.alu_adc(self.registers.d);
+                self.cycles += 4;
+            }
+
+            // ADC A,E
+            0x8B => {
+                self.alu_adc(self.registers.e);
+                self.cycles += 4;
+            }
+
+            // ADC A,H
+            0x8C => {
+                self.alu_adc(self.registers.h);
+                self.cycles += 4;
+            }
+
+            // ADC A,L
+            0x8D => {
+                self.alu_adc(self.registers.l);
+                self.cycles += 4;
+            }
+
+            // ADC A,(HL)
+            0x8E => {
+                let address = self.registers.hl();
+                let value = self.memory.read_byte(address);
+                self.alu_adc(value);
+                self.cycles += 8;
+            }
+
+            // ADC A,A
+            0x8F => {
+                self.alu_adc(self.registers.a);
+                self.cycles += 4;
+            }
+
+            // SUB B
+            0x90 => {
+                self.alu_sub(self.registers.b);
+                self.cycles += 4;
+            }
+
+            // SUB C
+            0x91 => {
+                self.alu_sub(self.registers.c);
+                self.cycles += 4;
+            }
+
+            // SUB D
+            0x92 => {
+                self.alu_sub(self.registers.d);
+                self.cycles += 4;
+            }
+            // SUB E
+            0x93 => {
+                self.alu_sub(self.registers.e);
+                self.cycles += 4;
+            }
+            // SUB H
+            0x94 => {
+                self.alu_sub(self.registers.h);
+                self.cycles += 4;
+            }
+
+            // SUB L
+            0x95 => {
+                self.alu_sub(self.registers.l);
+                self.cycles += 4;
+            }
+
+            // SUB (HL)
+            0x96 => {
+                let address = self.registers.hl();
+                let value = self.memory.read_byte(address);
+                self.alu_sub(value);
+                self.cycles += 8;
+            }
+
+            // SUB A
+            0x97 => {
+                self.alu_sub(self.registers.a);
+                self.cycles += 4;
+            }
+
+            // SBC B
+            0x98 => {
+                self.alu_sbc(self.registers.b);
+                self.cycles += 4;
+            }
+
+            // SBC C
+            0x99 => {
+                self.alu_sbc(self.registers.c);
+                self.cycles += 4;
+            }
+
+            // SBC D
+            0x9A => {
+                self.alu_sbc(self.registers.d);
+                self.cycles += 4;
+            }
+
+            // SBC E
+            0x9B => {
+                self.alu_sbc(self.registers.e);
+                self.cycles += 4;
+            }
+
+            // SBC H
+            0x9C => {
+                self.alu_sbc(self.registers.h);
+                self.cycles += 4;
+            }
+
+            // SBC L
+            0x9D => {
+                self.alu_sbc(self.registers.l);
+                self.cycles += 4;
+            }
+
+            // SBC (HL)
+            0x9E => {
+                let address = self.registers.hl();
+                let value = self.memory.read_byte(address);
+                self.alu_sbc(value);
+                self.cycles += 8;
+            }
+
+            // SBC A
+            0x9F => {
+                self.alu_sbc(self.registers.a);
+                self.cycles += 4;
+            }
+
+            // AND B
+            0xA0 => {
+                self.alu_and(self.registers.b);
+                self.cycles += 4;
+            }
+
+            // AND C
+            0xA1 => {
+                self.alu_and(self.registers.c);
+                self.cycles += 4;
+            }
+
+            // AND D
+            0xA2 => {
+                self.alu_and(self.registers.d);
+                self.cycles += 4;
+            }
+
+            // AND E
+            0xA3 => {
+                self.alu_and(self.registers.e);
+                self.cycles += 4;
+            }
+
+            // AND H
+            0xA4 => {
+                self.alu_and(self.registers.h);
+                self.cycles += 4;
+            }
+
+            // AND L
+            0xA5 => {
+                self.alu_and(self.registers.l);
+                self.cycles += 4;
+            }
+
+            // AND (HL)
+            0xA6 => {
+                let address = self.registers.hl();
+                let value = self.memory.read_byte(address);
+
+                self.alu_and(value);
+                self.cycles += 8;
+            }
+
+            // AND A
+            0xA7 => {
+                self.alu_and(self.registers.a);
+                self.cycles += 4;
+            }
+
+            // XOR B
+            0xA8 => {
+                self.alu_xor(self.registers.b);
+                self.cycles += 4;
+            }
+
+            // XOR C
+            0xA9 => {
+                self.alu_xor(self.registers.c);
+                self.cycles += 4;
+            }
+
+            // XOR D
+            0xAA => {
+                self.alu_xor(self.registers.d);
+                self.cycles += 4;
+            }
+
+            // XOR E
+            0xAB => {
+                self.alu_xor(self.registers.e);
+                self.cycles += 4;
+            }
+
+            // XOR H
+            0xAC => {
+                self.alu_xor(self.registers.h);
+                self.cycles += 4;
+            }
+
+            // XOR L
+            0xAD => {
+                self.alu_xor(self.registers.l);
+                self.cycles += 4;
+            }
+
+            // XOR (HL)
+            0xAE => {
+                let address = self.registers.hl();
+                let value = self.memory.read_byte(address);
+                self.alu_xor(value);
+                self.cycles += 8;
+            }
+
+            // XOR A
+            0xAF => {
+                self.alu_xor(self.registers.a);
+                self.cycles += 4;
+            }
+
+            // OR B
+            0xB0 => {
+                self.alu_or(self.registers.b);
+                self.cycles += 4;
+            }
+
+            // OR C
+            0xB1 => {
+                self.alu_or(self.registers.c);
+                self.cycles += 4;
+            }
+            // OR D
+            0xB2 => {
+                self.alu_or(self.registers.d);
+                self.cycles += 4;
+            }
+
+            // OR E
+            0xB3 => {
+                self.alu_or(self.registers.e);
+                self.cycles += 4;
+            }
+
+            // OR H
+            0xB4 => {
+                self.alu_or(self.registers.h);
+                self.cycles += 4;
+            }
+
+            // OR L
+            0xB5 => {
+                self.alu_or(self.registers.l);
+                self.cycles += 4;
+            }
+
+            // OR HL
+            0xB6 => {
+                let address = self.registers.hl();
+                let value = self.memory.read_byte(address);
+                self.alu_or(value);
+                self.cycles += 8;
+            }
+
+            // OR A
+            0xB7 => {
+                self.alu_or(self.registers.a);
+                self.cycles += 4;
+            }
+
+            // CP B
+            0xB8 => {
+                self.alu_cp(self.registers.b);
+                self.cycles += 4;
+            }
+
+            // CP C
+            0xB9 => {
+                self.alu_cp(self.registers.c);
+                self.cycles += 4;
+            }
+
+            // CP D
+            0xBA => {
+                self.alu_cp(self.registers.d);
+                self.cycles += 4;
+            }
+
+            // CP E
+            0xBB => {
+                self.alu_cp(self.registers.e);
+                self.cycles += 4;
+            }
+
+            // CP H
+            0xBC => {
+                self.alu_cp(self.registers.h);
+                self.cycles += 4;
+            }
+
+            // CP L
+            0xBD => {
+                self.alu_cp(self.registers.l);
+                self.cycles += 4;
+            }
+
+            // CP HL
+            0xBE => {
+                let address = self.registers.hl();
+                let value = self.memory.read_byte(address);
+                self.alu_cp(value);
+                self.cycles += 8;
+            }
+
+            // CP A
+            0xBF => {
+                self.alu_cp(self.registers.a);
+                self.cycles += 4;
+            }
 
             //...so I need to implement all 256 opcodes?
-
-            _ => panic!("Unimplemented opcode: 0x{:02X} at PC: 0x{:04X}", opcode, self.pc -1),
+            _ => panic!(
+                "Unimplemented opcode: 0x{:02X} at PC: 0x{:04X}",
+                opcode,
+                self.pc - 1
+            ),
         }
     }
 
@@ -485,23 +834,23 @@ impl Cpu {
 
     fn alu_inc(&mut self, value: u8) -> u8 {
         let result = value.wrapping_add(1);
-        
+
         // Set flags
         self.registers.set_flag_zero(result == 0);
         self.registers.set_flag_subtract(false);
         self.registers.set_flag_half_carry((value & 0x0F) == 0x0F);
-        
+
         result
     }
 
     fn alu_dec(&mut self, value: u8) -> u8 {
         let result = value.wrapping_sub(1);
-        
+
         // Set flags
         self.registers.set_flag_zero(result == 0);
         self.registers.set_flag_subtract(true);
         self.registers.set_flag_half_carry((value & 0x0F) == 0);
-        
+
         result
     }
 
@@ -512,9 +861,40 @@ impl Cpu {
         // Set flags
         self.registers.set_flag_zero(result == 0);
         self.registers.set_flag_subtract(false);
-        self.registers.set_flag_half_carry((a & 0x0F) + (value & 0x0F) > 0x0F);
-        self.registers.set_flag_carry(a as u16 + value as u16 > 0xFF);
-        
+        self.registers
+            .set_flag_half_carry((a & 0x0F) + (value & 0x0F) > 0x0F);
+        self.registers
+            .set_flag_carry(a as u16 + value as u16 > 0xFF);
+
+        self.registers.a = result;
+    }
+
+    fn alu_adc(&mut self, value: u8) {
+        let a = self.registers.a;
+        let carry = self.registers.flag_carry() as u8; /* flag_carry() returns a bool, so false as u8 -> 0, true as u8 -> 1*/
+
+        let result = a.wrapping_add(value).wrapping_add(carry); /* wrapping_add is a method on u8, plain + on u8 panics in debug builds on overflow (e.g. 255+1).*/
+        /* we also chain (a + value + carry) mod 256 */
+        // Set flags
+        self.registers.set_flag_zero(result == 0); // evaluates to a bool, which is what the
+        // setter takes. zero flag is set when the 8-bit result is zero
+
+        self.registers.set_flag_subtract(false);
+        // ADC is addition, so the N flag is always cleared. Literal false.
+        self.registers
+            .set_flag_half_carry((a & 0x0F) + (value & 0x0F) + carry > 0x0F);
+        // a & 0x0F masks off everything but the low nibble (bottom 4 bits). & is bitwise-AND here.
+        // a, value, and carry are all u8. The masked values are at most 0x0F (15) each, plus carry
+        // <= 1, so the sum amxes at 15 + 15 + 1 = 31, comfortably under 255, so this u8 addition
+        // can't overflow and wrapping/widening isn't needed here. The whole expression is a bool (>
+        // (0x0F), passed straight to the setter
+        self.registers
+            .set_flag_carry((a as u16) + (value as u16) + (carry as u16) > 0xFF);
+        // We must widen to u16 first. If we added these as u7, 255+1 would wrap to 0, and we would
+        // lose the very overflow we're trying to detect. By casting to u16 (range 0-65535), the sum
+        // 255 + 0 + 1 = 256 survives intact, and 256 > 0xFF is true.
+        // That's the carry
+        // Note, we cast the inputs and add in u16 space, not result, which has already wrapped
         self.registers.a = result;
     }
 
@@ -525,13 +905,71 @@ impl Cpu {
         // Set flags
         self.registers.set_flag_zero(result == 0);
         self.registers.set_flag_subtract(true);
-        self.registers.set_flag_half_carry((a & 0x0F) < (value & 0x0F));
+        self.registers
+            .set_flag_half_carry((a & 0x0F) < (value & 0x0F));
         self.registers.set_flag_carry(a < value);
-        
+
         self.registers.a = result;
     }
-}
 
+    fn alu_sbc(&mut self, value: u8) {
+        let a = self.registers.a;
+        let carry = self.registers.flag_carry() as u8; // read BEFORE setting flags -same rule
+        // as ADC
+
+        let result = a.wrapping_sub(value).wrapping_sub(carry);
+
+        // Set flags
+        self.registers.set_flag_zero(result == 0);
+        self.registers.set_flag_subtract(true); // it's subtract -> N = 1
+        self.registers
+            .set_flag_half_carry((a & 0x0F) < (value & 0x0F) + carry); // low nibble-borrow, including
+        // carry
+        self.registers
+            .set_flag_carry((a as u16) < (value as u16) + (carry as u16)); // full borrow, including carry
+
+        self.registers.a = result;
+    }
+
+    fn alu_and(&mut self, value: u8) {
+        let result = self.registers.a & value; // bitwise AND
+        self.registers.set_flag_zero(result == 0);
+        self.registers.set_flag_subtract(false);
+        self.registers.set_flag_half_carry(true); // the quirk, ALWAYS true for AND
+        self.registers.set_flag_carry(false);
+        self.registers.a = result;
+    }
+
+    fn alu_xor(&mut self, value: u8) {
+        let result = self.registers.a ^ value; // ^ is bitwise XOR
+        self.registers.set_flag_zero(result == 0);
+        self.registers.set_flag_subtract(false);
+        self.registers.set_flag_half_carry(false); // XOR clears H ( no quirk, unlike AND)
+        self.registers.set_flag_carry(false);
+        self.registers.a = result;
+    }
+
+    fn alu_or(&mut self, value: u8) {
+        let result = self.registers.a | value; // | is bitwise OR
+        self.registers.set_flag_zero(result == 0);
+        self.registers.set_flag_subtract(false);
+        self.registers.set_flag_half_carry(false);
+        self.registers.set_flag_carry(false);
+        self.registers.a = result;
+    }
+
+    fn alu_cp(&mut self, value: u8) {
+        let a = self.registers.a;
+        let result = a.wrapping_sub(value);
+
+        self.registers.set_flag_zero(result == 0);
+        self.registers.set_flag_subtract(true);
+        self.registers
+            .set_flag_half_carry((a & 0x0F) < (value & 0x0F));
+        self.registers.set_flag_carry(a < value);
+        // NOTE: no self.registers.a = result; CP discards the result, A is unchanged
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -546,7 +984,6 @@ mod tests {
         registers.c = 0x34;
         assert_eq!(registers.bc(), 0x1234);
 
-
         registers.set_bc(0xABCD);
         assert_eq!(registers.b, 0xAB);
         assert_eq!(registers.c, 0xCD);
@@ -556,7 +993,6 @@ mod tests {
         registers.e = 0x78;
         assert_eq!(registers.de(), 0x5678);
 
-
         registers.set_de(0xEF01);
         assert_eq!(registers.d, 0xEF);
         assert_eq!(registers.e, 0x01);
@@ -565,7 +1001,6 @@ mod tests {
         registers.h = 0x9A;
         registers.l = 0xBC;
         assert_eq!(registers.hl(), 0x9ABC);
-
 
         registers.set_hl(0x2345);
         assert_eq!(registers.h, 0x23);
@@ -600,7 +1035,7 @@ mod tests {
         registers.set_flag_half_carry(true);
         assert!(registers.flag_half_carry());
         assert_eq!(registers.f & 0b0010_0000, 0b0010_0000);
-        
+
         // Test carry flag
         registers.set_flag_carry(true);
         assert!(registers.flag_carry());
@@ -641,7 +1076,6 @@ mod tests {
         Register::A.set(&mut cpu, 0xFF);
         assert_eq!(Register::A.get(&cpu), 0xFF);
         assert_eq!(cpu.registers.a, 0xFF);
-
     }
 }
 
@@ -657,7 +1091,6 @@ mod instruction_tests {
         cpu
     }
 
-
     #[test]
     fn test_ld_r_n_family() {
         struct TestCase {
@@ -667,13 +1100,41 @@ mod instruction_tests {
         }
 
         let cases = vec![
-            TestCase { opcode: 0x06, value: 0x12, register: Register::B },
-            TestCase { opcode: 0x0E, value: 0x34, register: Register::C },
-            TestCase { opcode: 0x16, value: 0x56, register: Register::D },
-            TestCase { opcode: 0x1E, value: 0x78, register: Register::E },
-            TestCase { opcode: 0x26, value: 0x9A, register: Register::H },
-            TestCase { opcode: 0x2E, value: 0xBC, register: Register::L },
-            TestCase { opcode: 0x3E, value: 0xDE, register: Register::A },
+            TestCase {
+                opcode: 0x06,
+                value: 0x12,
+                register: Register::B,
+            },
+            TestCase {
+                opcode: 0x0E,
+                value: 0x34,
+                register: Register::C,
+            },
+            TestCase {
+                opcode: 0x16,
+                value: 0x56,
+                register: Register::D,
+            },
+            TestCase {
+                opcode: 0x1E,
+                value: 0x78,
+                register: Register::E,
+            },
+            TestCase {
+                opcode: 0x26,
+                value: 0x9A,
+                register: Register::H,
+            },
+            TestCase {
+                opcode: 0x2E,
+                value: 0xBC,
+                register: Register::L,
+            },
+            TestCase {
+                opcode: 0x3E,
+                value: 0xDE,
+                register: Register::A,
+            },
         ];
 
         for case in cases {
@@ -688,13 +1149,12 @@ mod instruction_tests {
             );
             assert_eq!(cpu.cycles, 8)
         }
-    
     }
 
     #[test]
     fn test_ld_r_r_family() {
         // Test LD r, r' instructions (0x40-0x7F, except 0x76 HALT)
-        
+
         for dest in Register::all() {
             for src in Register::all() {
                 // Calculate opcode: 0x40 + (dest * 8) + src
@@ -751,13 +1211,34 @@ mod instruction_tests {
         }
 
         let cases = vec![
-            TestCase { opcode: 0x04, register: Register::B },
-            TestCase { opcode: 0x0C, register: Register::C },
-            TestCase { opcode: 0x14, register: Register::D },
-            TestCase { opcode: 0x1C, register: Register::E },
-            TestCase { opcode: 0x24, register: Register::H },
-            TestCase { opcode: 0x2C, register: Register::L },
-            TestCase { opcode: 0x3C, register: Register::A },
+            TestCase {
+                opcode: 0x04,
+                register: Register::B,
+            },
+            TestCase {
+                opcode: 0x0C,
+                register: Register::C,
+            },
+            TestCase {
+                opcode: 0x14,
+                register: Register::D,
+            },
+            TestCase {
+                opcode: 0x1C,
+                register: Register::E,
+            },
+            TestCase {
+                opcode: 0x24,
+                register: Register::H,
+            },
+            TestCase {
+                opcode: 0x2C,
+                register: Register::L,
+            },
+            TestCase {
+                opcode: 0x3C,
+                register: Register::A,
+            },
         ];
 
         for case in cases {
@@ -795,9 +1276,8 @@ mod instruction_tests {
                 case.register.name()
             );
         }
-
     }
- 
+
     #[test]
     fn test_dec_r_family() {
         struct TestCase {
@@ -806,13 +1286,34 @@ mod instruction_tests {
         }
 
         let cases = vec![
-            TestCase { opcode: 0x05, register: Register::B },
-            TestCase { opcode: 0x0D, register: Register::C },
-            TestCase { opcode: 0x15, register: Register::D },
-            TestCase { opcode: 0x1D, register: Register::E },
-            TestCase { opcode: 0x25, register: Register::H },
-            TestCase { opcode: 0x2D, register: Register::L },
-            TestCase { opcode: 0x3D, register: Register::A },
+            TestCase {
+                opcode: 0x05,
+                register: Register::B,
+            },
+            TestCase {
+                opcode: 0x0D,
+                register: Register::C,
+            },
+            TestCase {
+                opcode: 0x15,
+                register: Register::D,
+            },
+            TestCase {
+                opcode: 0x1D,
+                register: Register::E,
+            },
+            TestCase {
+                opcode: 0x25,
+                register: Register::H,
+            },
+            TestCase {
+                opcode: 0x2D,
+                register: Register::L,
+            },
+            TestCase {
+                opcode: 0x3D,
+                register: Register::A,
+            },
         ];
 
         for case in cases {
@@ -840,32 +1341,36 @@ mod instruction_tests {
                 case.register.name()
             );
         }
-
     }
 
     #[test]
     fn test_add_a_r_family() {
         // Test ADD with different registers (0x80-0x86)
-        for (idx, reg) in Register::all()[..6].iter().enumerate() { // Skip the last one (A)
+        for (idx, reg) in Register::all()[..6].iter().enumerate() {
+            // Skip the last one (A)
             let opcode = 0x80 + idx as u8;
-            
+
             // Test normal addition
             let mut cpu = setup_cpu(vec![opcode]);
             Register::A.set(&mut cpu, 0x05);
             reg.set(&mut cpu, 0x03);
             cpu.step();
             assert_eq!(Register::A.get(&cpu), 0x08, "Failed ADD A,{}", reg.name());
-            
+
             // Test with carry
             let mut cpu = setup_cpu(vec![opcode]);
             Register::A.set(&mut cpu, 0xFF);
             reg.set(&mut cpu, 0x02);
             cpu.step();
             assert_eq!(Register::A.get(&cpu), 0x01);
-            assert!(cpu.registers.flag_carry(), "Failed carry for ADD A,{}", reg.name());
+            assert!(
+                cpu.registers.flag_carry(),
+                "Failed carry for ADD A,{}",
+                reg.name()
+            );
         }
     }
-    
+
     #[test]
     fn test_add_a_a() {
         // Special case: ADD A, A (0x87)
@@ -873,7 +1378,7 @@ mod instruction_tests {
         Register::A.set(&mut cpu, 0x05);
         cpu.step();
         assert_eq!(Register::A.get(&cpu), 0x0A); // 0x05 + 0x05 = 0x0A
-        
+
         // Test with carry
         let mut cpu = setup_cpu(vec![0x87]);
         Register::A.set(&mut cpu, 0xFF);
@@ -881,4 +1386,99 @@ mod instruction_tests {
         assert_eq!(Register::A.get(&cpu), 0xFE); // 0xFF + 0xFF = 0x1FE -> 0xFE
         assert!(cpu.registers.flag_carry());
     }
+
+    #[test]
+    fn test_adc_a_b() {
+        // making sure carry-in actually participates
+        let mut cpu = setup_cpu(vec![0x88]);
+        Register::A.set(&mut cpu, 0xFF);
+        Register::B.set(&mut cpu, 0x00);
+        cpu.registers.set_flag_carry(true); // set the carry flag before stepping
+        cpu.step();
+        assert_eq!(Register::A.get(&cpu), 0x00);
+        assert!(cpu.registers.flag_zero());
+        assert!(cpu.registers.flag_carry());
+        assert!(cpu.registers.flag_half_carry());
+        assert!(!cpu.registers.flag_subtract());
+    }
+
+    #[test]
+    fn test_sub_b() {
+        // 0x05 - 0x10 wraps to 0xF5
+        let mut cpu = setup_cpu(vec![0x90]); // set to SUB B opcode 
+        Register::A.set(&mut cpu, 0x05);
+        Register::B.set(&mut cpu, 0x10);
+        cpu.step();
+        assert_eq!(Register::A.get(&cpu), 0xF5);
+        assert!(cpu.registers.flag_carry());
+        assert!(!cpu.registers.flag_half_carry()); // low-nibble borrow 0x5 < 0x0, but (0x05 & 0x0F)
+        // < (0x10 & 0x0F), 5<0? What should H be
+        assert!(cpu.registers.flag_subtract());
+        assert!(!cpu.registers.flag_zero());
+    }
+
+    #[test]
+    fn test_sbc_a_b() {
+        let mut cpu = setup_cpu(vec![0x98]); //SBC A,B
+        Register::A.set(&mut cpu, 0x00);
+        Register::B.set(&mut cpu, 0x00);
+        cpu.registers.set_flag_carry(true); // the borrowin, the whole point
+        cpu.step();
+        assert_eq!(Register::A.get(&cpu), 0xFF);
+        assert!(cpu.registers.flag_carry());
+        assert!(cpu.registers.flag_half_carry());
+        assert!(cpu.registers.flag_subtract());
+        assert!(!cpu.registers.flag_zero());
+    }
+
+    #[test]
+    fn test_and_b() {
+        let mut cpu = setup_cpu(vec![0xA0]); // AND B
+        Register::A.set(&mut cpu, 0x0F);
+        Register::B.set(&mut cpu, 0xF0);
+        cpu.step();
+        assert_eq!(Register::A.get(&cpu), 0x00); // 0x0F & 0xF0 = 0x00 ( no overlapping bits)
+        assert!(cpu.registers.flag_zero()); // result is zero
+        assert!(cpu.registers.flag_half_carry()); //The QUIRK - H set even though nothing carried
+        assert!(!cpu.registers.flag_carry()); // AND always clears C
+        assert!(!cpu.registers.flag_subtract()) // not a subtract
+    }
+
+    #[test]
+    fn test_xor_a() {
+        let mut cpu = setup_cpu(vec![0xAF]); // XOR A
+        Register::A.set(&mut cpu, 0xFF); // any value
+        cpu.step();
+        assert_eq!(Register::A.get(&cpu), 0x00); // XOR'd with itself is always 0
+        assert!(cpu.registers.flag_zero()); // so Z must be set
+        assert!(!cpu.registers.flag_half_carry()); // XOR clears H (NOT AND's quirk)
+        assert!(!cpu.registers.flag_carry());
+        assert!(!cpu.registers.flag_subtract());
+    }
+
+    #[test]
+    fn test_or_b() {
+        let mut cpu = setup_cpu(vec![0xB0]); // OR B
+        Register::A.set(&mut cpu, 0xF0);
+        Register::B.set(&mut cpu, 0x0F);
+        cpu.step();
+        assert_eq!(Register::A.get(&cpu), 0xFF); // 0xF0 | 0x0F = 0xFF (bits combine)
+        assert!(!cpu.registers.flag_zero()); // result non-zero -> Z clear
+        assert!(!cpu.registers.flag_half_carry());
+        assert!(!cpu.registers.flag_carry());
+        assert!(!cpu.registers.flag_subtract());
+    }
+
+    #[test]
+    fn test_cp_b() {
+        let mut cpu = setup_cpu(vec![0xB8]); // CP B
+        Register::A.set(&mut cpu, 0x05);
+        Register::B.set(&mut cpu, 0x05);
+        cpu.step();
+        assert_eq!(Register::A.get(&cpu), 0x05); // THE POINT: A is NOT modified
+        assert!(cpu.registers.flag_zero()); // 0x0f == 0x0f -> equal -> Z set
+        assert!(cpu.registers.flag_subtract());
+        assert!(!cpu.registers.flag_carry()); // A not less than B
+    }
 }
+

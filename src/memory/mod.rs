@@ -40,7 +40,7 @@ impl Memory {
             oam: [0; 0xA0],
             io_registers: [0; 0x80],
             hram: [0; 0x7F],
-            ie_register: 0
+            ie_register: 0,
         }
     }
 
@@ -72,7 +72,6 @@ impl Memory {
 
             // I/O Registers
             0xFF00..=0xFF7F => self.io_registers[(address - 0xFF00) as usize],
-
 
             // High RAM
             0xFF80..=0xFFFE => self.hram[(address - 0xFF80) as usize],
@@ -191,7 +190,7 @@ mod tests {
     #[test]
     fn test_unusable_memory_returns_ff() {
         let memory = Memory::new();
-        
+
         // The range 0xFEA0-0xFEFF is not usable and should return 0xFF
         for addr in 0xFEA0..=0xFEFF {
             assert_eq!(memory.read_byte(addr), 0xFF);
@@ -219,7 +218,7 @@ mod tests {
 
         let rom = vec![
             0x00, 0x01, 0x02, 0x03, // First few bytes
-            // ...imagine it continues
+                 // ...imagine it continues
         ];
 
         memory.load_rom(&rom);
@@ -245,3 +244,4 @@ mod tests {
         assert_eq!(memory.read_byte(0x0000), 0xAA);
     }
 }
+
