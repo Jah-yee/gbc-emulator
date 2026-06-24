@@ -315,9 +315,36 @@ impl Cpu {
         let coincidence = ly == lyc; // true when ly equals lyc
 
         // write bits 0-2, PRESERVING bits 3-7 (the game's enable bits)
-        let stat = self.memory.read_byte(0xFF41);
-        let stat = (stat & !7) | mode | (coincidence as u8) << 2;
-        self.memory.write_byte(0xFF41, stat);
+        let old_stat = self.memory.read_byte(0xFF41);
+        let new_stat = (old_stat & !7) | mode | (coincidence as u8) << 2;
+        self.memory.write_byte(0xFF41, new_stat);
+
+        // STAT interrupt (IF bit 1), fired on rising edges
+        let prev_mode = old_stat & 0x03;
+        let prev_coicidence = old_stat & 0x04 != 0;
+
+        let mut fire = false;
+
+        // mode just changed -> check the enable bit for the mode we ENTERED
+        if mode != prev_mode {
+            let enable = match mode {
+                0 => 0x08, // HBlank
+                2 => 0x20, // OAM
+                1 => 0x10, // VBlank
+                _ => 0,    // mode 3: no STAT source
+            };
+            if old_stat & enable != 0 {
+                fire = true;
+            }
+        }
+
+        if coincidence && !prev_coicidence && (old_stat & 0x40 != 0) {
+            fire = true;
+        }
+
+        if fire {
+            self.request_interrupt(1);
+        }
     }
 
     /// Request an interrupt by setting its IF (0xFF0F) bit. bit: 0=VBlank .. 4=Joypad
@@ -2026,5 +2053,33 @@ mod instruction_tests {
         let mut cpu = setup_cpu(vec![]);
         cpu.step_ppu(456 * 144); // LY = 144 -> VBlank
         assert_eq!(cpu.memory.read_byte(0xFF41) & 0b11, 1);
+    }
+
+    #[test]
+    fn test_stat_interrupt_fires_on_hblank() {
+        let mut cpu = setup_cpu(vec![]);
+        cpu.memory.write_byte(0xFF41, 0x08); // arm Mode 0 (HBlank) STAT interrupt
+        cpu.step_ppu(4); // Mode 2 ( not HBlank, no fire)
+        cpu.step_ppu(300); // dot 304 -> enters mode 0
+        assert_eq!(cpu.memory.read_byte(0xFF0F) & 0x02, 0x02); // IF bit 1 set
+    }
+
+    #[test]
+    fn test_stat_interrupt_silent_when_disabled() {
+        let mut cpu = setup_cpu(vec![]);
+        cpu.memory.write_word(0xFF41, 0x00); // no enabled armed
+        cpu.step_ppu(4);
+        cpu.step_ppu(300); // enters Mode 0, but disabled
+        assert_eq!(cpu.memory.read_byte(0xFF0F) & 0x02, 0x00); // no STAT interrupt
+    }
+
+    #[test]
+    fn teset_stat_interrupt_fires_on_lyc_coincidence() {
+        let mut cpu = setup_cpu(vec![]);
+        cpu.memory.write_byte(0xFF45, 0x01); // LYC = 1
+        cpu.memory.write_byte(0xFF41, 0x40); // arm LYC interrupt
+        cpu.step_ppu(456); // LY -> 1, coincidence rises
+
+        assert_eq!(cpu.memory.read_byte(0xFF0F) & 0x02, 0x02);
     }
 }
