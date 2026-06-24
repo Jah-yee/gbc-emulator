@@ -192,6 +192,7 @@ pub struct Cpu {
     pub div_counter: u16,  // accumulates cycles for DIV (DIV = its high byte)
     pub tima_counter: u32, // accumulates cycles for TIMA
     pub ppu_dots: u32,     // accumulates cycles within the current scanline
+    pub framebuffer: [u8; 160 * 144], // one color id (0-3) per pixel
 }
 
 impl Cpu {
@@ -207,6 +208,7 @@ impl Cpu {
             div_counter: 0,
             tima_counter: 0,
             ppu_dots: 0,
+            framebuffer: [0; 160 * 144],
         }
     }
 
@@ -344,6 +346,49 @@ impl Cpu {
 
         if fire {
             self.request_interrupt(1);
+        }
+    }
+
+    /// Render one background scanline into the framebuffer.
+    /// Hardcodes map 0x9800 + 0x8000 tile data; LCDC/palette come next chunk
+    fn render_scanline(&mut self, ly: u8) {
+        let scy = self.memory.read_byte(0xFF42);
+        let scx = self.memory.read_byte(0xFF43);
+        let lcdc = self.memory.read_byte(0xFF40);
+        let bgp = self.memory.read_byte(0xFF47);
+
+        let map_base: u16 = if (lcdc & 0x08) != 0 { 0x9C00 } else { 0x9800 };
+
+        let bg_y = (ly as u16 + scy as u16) & 0xFF; // wraps in the 256px-tall map
+        let tile_row = bg_y / 8; // which tile row (0-31)
+        let row_in_tile = bg_y % 8; // which of the tile's 8 rows
+
+        for x in 0..160u16 {
+            let bg_x = (x + scx as u16) & 0xFF; // wraps in the 256-px wide map
+            let tile_col = bg_x / 8;
+            let px_in_tile = (bg_x % 8) as usize;
+
+            // look up the tile index in the 32-wide map
+            let map_addr = map_base + tile_row * 32 + tile_col;
+            let tile_id = self.memory.read_byte(map_addr);
+
+            // that tile's data, then the 2 bytes for this row
+            let tile_addr: u16 = if lcdc & 0x10 != 0 {
+                0x8000 + (tile_id as u16) * 16
+            } else {
+                (0x9000_i32 + (tile_id as i8 as i32) * 16) as u16
+            };
+
+            let row_addr = tile_addr + row_in_tile * 2;
+            let low = self.memory.read_byte(row_addr);
+            let high = self.memory.read_byte(row_addr + 1);
+
+            // decode the row, pick pixel
+            let color = decode_tile_row(low, high)[px_in_tile];
+            let shade = apply_palette(bgp, color);
+
+            // store it
+            self.framebuffer[(ly as usize * 160) + (x as usize)] = shade;
         }
     }
 
@@ -1139,6 +1184,23 @@ impl Cpu {
         self.registers.set_flag_carry(a < value);
         // NOTE: no self.registers.a = result; CP discards the result, A is unchanged
     }
+}
+
+/// Decode one 8-pixel tile row (2 bytes, 2bpp) into 8 color IDs (0-3)
+fn decode_tile_row(low: u8, high: u8) -> [u8; 8] {
+    let mut pixels = [0u8; 8];
+    for i in 0..8 {
+        let bit = 7 - i; // leftmost pixel = bit 7
+        let lo = (low >> bit) & 1;
+        let hi = (high >> bit) & 1;
+        pixels[i] = (hi << 1) | lo;
+    }
+    pixels
+}
+
+/// Map a 2-bit color id through the palette register to a 2-bit shade.
+fn apply_palette(palette: u8, color: u8) -> u8 {
+    (palette >> (color * 2)) & 0b11
 }
 
 #[cfg(test)]
@@ -2081,5 +2143,58 @@ mod instruction_tests {
         cpu.step_ppu(456); // LY -> 1, coincidence rises
 
         assert_eq!(cpu.memory.read_byte(0xFF0F) & 0x02, 0x02);
+    }
+
+    #[test]
+    fn test_decode_tile_row() {
+        assert_eq!(decode_tile_row(0x3C, 0x7E), [0, 2, 3, 3, 3, 3, 2, 0]);
+    }
+
+    #[test]
+    fn test_decode_tile_row_solid_colors() {
+        assert_eq!(decode_tile_row(0xFF, 0xFF), [3; 8]); // both bits set -> all 3 
+        assert_eq!(decode_tile_row(0xFF, 0x00), [1; 8]); // only low -> all 1
+        assert_eq!(decode_tile_row(0x00, 0xFF), [2; 8]); // only high -> all 2
+    }
+
+    #[test]
+    fn test_render_bg_scanline() {
+        let mut cpu = setup_cpu(vec![]);
+        // tile #1, row 0: low=0x3C high=0x7E -> [0, 2, 3, 3, 3, 3, 2, 0]
+        cpu.memory.write_byte(0x8010, 0x3C); // 0x8000 + 1*16
+        cpu.memory.write_byte(0x8011, 0x7E);
+        cpu.memory.write_byte(0x9800, 0x01); // map (0,0) -> tile #1
+        cpu.memory.write_byte(0xFF42, 0); // SCY = 0
+        cpu.memory.write_byte(0xFF43, 0); // SCX = 0
+        cpu.memory.write_byte(0xFF40, 0b0001_0000); // LCDC bit 4 = unsigned 0x8000
+        // data
+        cpu.memory.write_byte(0xFF47, 0xE4); // BGP = identity (id n -> shade n)
+
+        cpu.render_scanline(0);
+
+        assert_eq!(&cpu.framebuffer[0..8], &[0, 2, 3, 3, 3, 3, 2, 0]);
+    }
+
+    #[test]
+    fn test_apply_palette() {
+        let identity = 0xE4; // 11_10_01_00 : id n -> shade n
+        assert_eq!(apply_palette(identity, 1), 1);
+        assert_eq!(apply_palette(identity, 3), 3);
+
+        let inverted = 0x1B; // 00_01_10_11 : id0 -> 3, id3 -> 0
+        assert_eq!(apply_palette(inverted, 0), 3);
+        assert_eq!(apply_palette(inverted, 3), 0);
+    }
+
+    #[test]
+    fn test_render_signed_tile_data() {
+        let mut cpu = setup_cpu(vec![]);
+        cpu.memory.write_byte(0x8FF0, 0x3c); // tile -1, row 0 (0x9000 -16)
+        cpu.memory.write_byte(0x8FF1, 0x7E);
+        cpu.memory.write_byte(0x9800, 0xFF); // map (0,0) -> tile index 0xFF (-1)
+        cpu.memory.write_byte(0xFF40, 0x00); // LCD bit4=0 -> signed 0x9000 mode
+        cpu.memory.write_byte(0xFF47, 0xE4); // identity palette
+        cpu.render_scanline(0);
+        assert_eq!(&cpu.framebuffer[0..8], &[0, 2, 3, 3, 3, 3, 2, 0]);
     }
 }
