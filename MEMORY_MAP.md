@@ -11,5 +11,34 @@
 0xFEA0-0xFEFF: Not usable
 0xFF00-0xFF7F: I/O Registers (controls hardware)
 0xFF80-0xFFFE: High RAM (HRAM) - first 127 bytes
-0xFFFF: Interrupt Enable Register
+0xFFFF: Interrupt Enable Register (IE)
+```
+
+## Key I/O Registers (0xFF00-0xFF7F)
+```
+0xFF04: DIV  - Divider (high byte of free-running counter; write resets*)
+0xFF05: TIMA - Timer counter (increments at TAC rate)
+0xFF06: TMA  - Timer modulo (TIMA reloads to this on overflow)
+0xFF07: TAC  - Timer control (bit2 = enable, bits1-0 = clock select)
+0xFF0F: IF   - Interrupt Flag (requested interrupts, low 5 bits)
+```
+*DIV write-reset not yet implemented (documented simplification).
+
+## Interrupts (bit = IE/IF position, vector = jump target)
+```
+bit 0: VBlank    -> 0x0040
+bit 1: LCD STAT  -> 0x0048
+bit 2: Timer     -> 0x0050
+bit 3: Serial    -> 0x0058
+bit 4: Joypad    -> 0x0060
+```
+Fires when IME on AND (IE & IF) bit set. Dispatch: clear IF bit,
+clear IME, push PC, jump to vector. RETI returns and re-enables IME.
+
+## PPU registers (NOT YET IMPLEMENTED - next subsystem)
+```
+0xFF40: LCDC - LCD control      0xFF44: LY   - current scanline
+0xFF41: STAT - LCD status/mode  0xFF45: LYC  - LY compare
+0xFF42: SCY  - scroll Y         0xFF47: BGP  - BG palette
+0xFF43: SCX  - scroll X
 ```

@@ -217,7 +217,8 @@ mod tests {
         let mut memory = Memory::new();
 
         let rom = vec![
-            0x00, 0x01, 0x02, 0x03, // First few bytes
+            0x00, 0x01, 0x02,
+            0x03, // First few bytes
                  // ...imagine it continues
         ];
 

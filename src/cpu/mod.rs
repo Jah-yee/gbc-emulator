@@ -28,6 +28,17 @@ impl Registers {
         }
     }
     // Helper methods to work with paired registers
+
+    pub fn af(&self) -> u16 {
+        ((self.a as u16) << 8) | (self.f as u16)
+    }
+
+    pub fn set_af(&mut self, value: u16) {
+        self.a = (value >> 8) as u8;
+        self.f = (value as u8) & 0xF0; // mask: low nibble of F must stay - there's a
+        // test_flag_lower_bits_always_zero
+    }
+
     pub fn bc(&self) -> u16 {
         ((self.b as u16) << 8) | (self.c as u16)
     }
@@ -178,6 +189,8 @@ pub struct Cpu {
     pub cycles: u64, // Total cycles executed
     pub halted: bool,
     pub interrupts_enabled: bool,
+    pub div_counter: u16,  // accumulates cycles for DIV (DIV = its high byte)
+    pub tima_counter: u32, // accumulates cycles for TIMA
 }
 
 impl Cpu {
@@ -190,22 +203,105 @@ impl Cpu {
             cycles: 0,
             halted: false,
             interrupts_enabled: false,
+            div_counter: 0,
+            tima_counter: 0,
         }
     }
 
     /// Execute one instruction
     pub fn step(&mut self) {
+        // Check for interrupts first - this can dispatch AND wake us from HALT.
+        self.handle_interrupts();
+
         if self.halted {
             // When halted, just increment cycles
             self.cycles += 4;
+            self.step_timer(4);
             return;
         }
 
+        let before = self.cycles;
         // Fetch the opcode
         let opcode = self.fetch_byte();
 
         // Execute the instruction
         self.execute(opcode);
+        let elapsed = (self.cycles - before) as u32;
+        self.step_timer(elapsed);
+    }
+
+    /// Advance the timer by the number of cycles the last instruction took.
+    fn step_timer(&mut self, cycles: u32) {
+        // DIV: free-running. The reigster is the HIGH byte of the 16-bit counter,
+        // so it increments once every 256 cycles (16384 Hz)
+        self.div_counter = self.div_counter.wrapping_add(cycles as u16);
+        self.memory
+            .write_byte(0xFF04, (self.div_counter >> 8) as u8);
+
+        // TIMA only runs when TAX bit 2 is set
+        let tac = self.memory.read_byte(0xFF07);
+        if tac & 0x04 == 0 {
+            return; // time disabled
+        }
+
+        // bits 1-0 pick how many CPU cycles per TIMA tick
+        let period: u32 = match tac & 0x03 {
+            0 => 1024, // 4096 Hz
+            1 => 16,   // 262144 Hz
+            2 => 64,   // 65536 Hz
+            3 => 256,  // 16384 Hz
+            _ => unreachable!(),
+        };
+
+        self.tima_counter += cycles;
+        while self.tima_counter >= period {
+            self.tima_counter -= period;
+            let tima = self.memory.read_byte(0xFF05);
+            if tima == 0xFF {
+                // overflow: reload from TMA and request the Timer interrupt (bit 2)
+                let tma = self.memory.read_byte(0xFF06);
+                self.memory.write_byte(0xFF05, tma);
+                self.request_interrupt(2);
+            } else {
+                self.memory.write_byte(0xFF05, tima + 1);
+            }
+        }
+    }
+
+    /// Request an interrupt by setting its IF (0xFF0F) bit. bit: 0=VBlank .. 4=Joypad
+    pub fn request_interrupt(&mut self, bit: u8) {
+        let iflag = self.memory.read_byte(0xFF0F);
+        self.memory.write_byte(0xFF0F, iflag | (1 << bit));
+    }
+
+    /// Check for and dispatch a pending interrupt. Runs before each fetch.
+    fn handle_interrupts(&mut self) {
+        let ie = self.memory.read_byte(0xFFFF); // which interrupts are enabled
+        let iflag = self.memory.read_byte(0xFF0F); // which are requested
+        let pending = ie & iflag & 0x1F; // enabled AND requested, low 5 bits
+
+        if pending == 0 {
+            return; // nothing to do
+        }
+
+        // A pending interrupt wakes the CPU from HALT - even if IME is off.
+        self.halted = false;
+
+        if !self.interrupts_enabled {
+            return; // IME off: woke from HALT but no NOT dispatch
+        }
+        // Highest priority = lowest set bit (VBlank=0 wins over Joypad=4)
+        let bit = pending.trailing_zeros() as u8;
+
+        // Acknowledge: clear this requeset, turn off IME for the handler.
+        self.memory.write_byte(0xFF0F, iflag & !(1 << bit));
+        self.interrupts_enabled = false;
+
+        // Hardware CALL: push pc, jump to the vector.
+        self.sp = self.sp.wrapping_sub(2);
+        self.memory.write_word(self.sp, self.pc);
+        self.pc = 0x0040 + (bit as u16) * 8;
+        self.cycles += 20;
     }
 
     /// Fetch a byte from PC and increment PC
@@ -225,30 +321,93 @@ impl Cpu {
     /// Execute an instruction based on opcode
     fn execute(&mut self, opcode: u8) {
         match opcode {
-            // NOP - No Operation
-            0x00 => {
-                self.cycles += 4;
-            }
-
-            // LD BC, d16 - Load 16-bit immediate into BC
-            0x01 => {
-                let value = self.fetch_word();
-                self.registers.set_bc(value);
+            // LD rr, d16
+            0x01 | 0x11 | 0x21 | 0x31 => {
+                let idx = (opcode >> 4) & 0x03; // bits 5-4 which pair
+                let value = self.fetch_word(); // read the 16-bit immediate (little endian)
+                self.write_rr(idx, false, value); // rp table -> BC/DE/HL/SP
                 self.cycles += 12;
             }
 
-            // LD (BC), A - Load A into memory address pointed to by BC
-            0x02 => {
-                let address = self.registers.bc();
-                self.memory.write_byte(address, self.registers.a);
+            // LD (rr), A - store A into memory at BC / DE / HL+  HL-
+            0x02 | 0x12 | 0x22 | 0x32 => {
+                let addr = match (opcode >> 4) & 0x03 {
+                    0 => self.registers.bc(),
+                    1 => self.registers.de(),
+                    2 => {
+                        let a = self.registers.hl();
+                        self.registers.set_hl(a.wrapping_add(1));
+                        a
+                    }
+                    3 => {
+                        let a = self.registers.hl();
+                        self.registers.set_hl(a.wrapping_sub(1));
+                        a
+                    }
+                    _ => unreachable!(),
+                };
+                self.memory.write_byte(addr, self.registers.a);
                 self.cycles += 8;
             }
 
-            // INC BC - Increment BC
-            0x03 => {
-                let value = self.registers.bc().wrapping_add(1);
-                self.registers.set_bc(value);
+            // INC rr
+            0x03 | 0x13 | 0x23 | 0x33 => {
+                let idx = (opcode >> 4) & 0x03;
+                let value = self.read_rr(idx, false).wrapping_add(1);
+                self.write_rr(idx, false, value);
                 self.cycles += 8;
+            }
+
+            // ADD HL, rr
+            0x09 | 0x19 | 0x29 | 0x39 => {
+                let idx = (opcode >> 4) & 0x03;
+                let hl = self.registers.hl();
+                let rr = self.read_rr(idx, false);
+                let result = hl.wrapping_add(rr);
+
+                // Z is intentionally left alone
+                self.registers.set_flag_subtract(false);
+                self.registers
+                    .set_flag_half_carry((hl & 0x0FFF) + (rr & 0x0FFF) > 0x0FFF);
+                self.registers
+                    .set_flag_carry((hl as u32) + (rr as u32) > 0xFFFF);
+
+                self.registers.set_hl(result);
+                self.cycles += 8;
+            }
+
+            // LD A, (rr) - load A from memory at BC / DE / HL+ / HL-
+            0x0A | 0x1A | 0x2A | 0x3A => {
+                let addr = match (opcode >> 4) & 0x03 {
+                    0 => self.registers.bc(),
+                    1 => self.registers.de(),
+                    2 => {
+                        let a = self.registers.hl();
+                        self.registers.set_hl(a.wrapping_add(1));
+                        a
+                    }
+                    3 => {
+                        let a = self.registers.hl();
+                        self.registers.set_hl(a.wrapping_sub(1));
+                        a
+                    }
+                    _ => unreachable!(),
+                };
+                self.registers.a = self.memory.read_byte(addr); // read INTO a
+                self.cycles += 8;
+            }
+
+            // DEC rr
+            0x0B | 0x1B | 0x2B | 0x3B => {
+                let idx = (opcode >> 4) & 0x03;
+                let value = self.read_rr(idx, false).wrapping_sub(1);
+                self.write_rr(idx, false, value);
+                self.cycles += 8;
+            }
+
+            // NOP - No Operation
+            0x00 => {
+                self.cycles += 4;
             }
 
             // INC B - Increment B
@@ -305,6 +464,17 @@ impl Cpu {
                 self.cycles += 8;
             }
 
+            // JR e8 - unconditional relative jump
+            0x18 => {
+                // three-cast offset math, pc += offset, 12 cycles
+                let offset = self.fetch_byte() as i8; // signed -1238..127; advances pc by 1
+                // let pc = self.pc as i16; // widen pc so we can add
+                // self.pc = (pc + offset as i16) as u16; // add, cast back to u16
+                self.pc = self.pc.wrapping_add(offset as i16 as u16); // sign-extend,
+                // reinterpret, modular add
+                self.cycles += 12;
+            }
+
             // INC E - Increment E
             0x1C => {
                 self.registers.e = self.alu_inc(self.registers.e);
@@ -321,6 +491,21 @@ impl Cpu {
             0x1E => {
                 self.registers.e = self.fetch_byte();
                 self.cycles += 8;
+            }
+
+            // JR cc, e8 - conditional relative jump
+            0x20 | 0x28 | 0x30 | 0x38 => {
+                // extract cc, fetch offset ALWAYS, then check_condition
+                let cc = (opcode >> 3) & 0x03;
+                let offset = self.fetch_byte() as i8; // ALWAYS fetch (advances pc past operand)
+                if self.check_condition(cc) {
+                    // let pc = self.pc as i16;
+                    // self.pc = (pc + offset as i16) as u16;
+                    self.pc = self.pc.wrapping_add(offset as i16 as u16);
+                    self.cycles += 12; //taken
+                } else {
+                    self.cycles += 8; // not taken
+                }
             }
 
             // INC H - Increment H
@@ -376,448 +561,172 @@ impl Cpu {
                 self.cycles += 8;
             }
 
-            // LD r, r' family (0x40-0x7F) - Load register to register
+            // LD r, r' - register/(HL) to register/(HL); 0x76 HALT
             0x40..=0x7F => {
-                // Special case: 0x76 is HALT (already implemented)
                 if opcode == 0x76 {
                     self.halted = true;
                     self.cycles += 4;
                 } else {
-                    // Decode source and destination from opcode
-                    let dest_idx = (opcode - 0x40) >> 3; // Upper 3 bits
-                    let src_idx = (opcode - 0x40) & 0x07; // Lower 3 bits
-
-                    // Get source value (index 6 means (HL) - memory)
-                    let value = match src_idx {
-                        0 => self.registers.b,
-                        1 => self.registers.c,
-                        2 => self.registers.d,
-                        3 => self.registers.e,
-                        4 => self.registers.h,
-                        5 => self.registers.l,
-                        6 => {
-                            let addr = self.registers.hl();
-                            self.memory.read_byte(addr)
-                        }
-                        7 => self.registers.a,
-                        _ => unreachable!(),
-                    };
-
-                    // Set destination value (index 6 means (HL) - memory)
-                    match dest_idx {
-                        0 => self.registers.b = value,
-                        1 => self.registers.c = value,
-                        2 => self.registers.d = value,
-                        3 => self.registers.e = value,
-                        4 => self.registers.h = value,
-                        5 => self.registers.l = value,
-                        6 => {
-                            let addr = self.registers.hl();
-                            self.memory.write_byte(addr, value);
-                        }
-                        7 => self.registers.a = value,
-                        _ => unreachable!(),
-                    };
-
-                    // Cycles: 4 for register-to-register, 8 if memory involved
-                    self.cycles += if src_idx == 6 || dest_idx == 6 { 8 } else { 4 };
+                    let dest = (opcode >> 3) & 0x07; // bits 5-3
+                    let src = opcode & 0x07; // bits 2-0
+                    let value = self.read_operand(src);
+                    self.write_operand(dest, value);
+                    self.cycles += if src == 6 || dest == 6 { 8 } else { 4 };
                 }
             }
 
-            0x80 => {
-                self.alu_add(self.registers.b);
+            // ALU ops: ADD/ADC/SUB/SBC/AND/XOR/OR/CP A, r (r = B,C,D,E,H,L,(HL),A)
+            0x80..=0xBF => {
+                let src = opcode & 0x07; // bitz 2-0: which operand
+                let op = (opcode >> 3) & 0x07; // bits 5-3: which operation
+                let value = self.read_operand(src);
+
+                match op {
+                    0 => self.alu_add(value),
+                    1 => self.alu_adc(value),
+                    2 => self.alu_sub(value),
+                    3 => self.alu_sbc(value),
+                    4 => self.alu_and(value),
+                    5 => self.alu_xor(value),
+                    6 => self.alu_or(value),
+                    7 => self.alu_cp(value),
+                    _ => unreachable!(),
+                }
+                // (HL) costs 8 cycles, all others 4
+                self.cycles += if src == 6 { 8 } else { 4 };
+            }
+
+            // JP a16 - unconditional jump
+            0xC3 => {
+                // fetch the 16-bit target, set pc to it, 16 cycles
+                let target = self.fetch_word();
+                self.pc = target;
+                self.cycles += 16;
+            }
+
+            // JP cc, a16 - conditional jump
+            0xC2 | 0xCA | 0xD2 | 0xDA => {
+                // 1. extract cc with (opcode >> 3) & 0x03
+                let cc = (opcode >> 3) & 0x03;
+                // 2. fetch the target ALWAYS (advances pc past the operand)
+                let target = self.fetch_word();
+                // 3. if check_condition(cc): set pc, 16 cycles
+                //  else: 12 cycles
+                if self.check_condition(cc) {
+                    self.pc = target;
+                    self.cycles += 16;
+                } else {
+                    self.cycles += 12;
+                }
+            }
+
+            // PUSH rr - decrement SP by 2, write the pair to the stack
+            0xC5 | 0xD5 | 0xE5 | 0xF5 => {
+                let idx = (opcode >> 4) & 0x03; // bits 5-4 -> BC/DE/HL/AF
+                let value = self.read_rr(idx, true); // use_af=true: index 3 == AF
+                self.sp = self.sp.wrapping_sub(2); // grow the stack downward FIRSZT
+                self.memory.write_word(self.sp, value); // little-endian: low byte at sp,
+                // high at sp +1
+                self.cycles += 16;
+            }
+
+            // RET cc - conditional return
+            0xC0 | 0xC8 | 0xD0 | 0xD8 => {
+                // (20 taken / 8 not)
+                let cc = (opcode >> 3) & 0x03;
+                if self.check_condition(cc) {
+                    let addr = self.memory.read_word(self.sp);
+                    self.sp = self.sp.wrapping_add(2);
+                    self.pc = addr;
+                    self.cycles += 20;
+                } else {
+                    self.cycles += 8;
+                }
+            }
+
+            // POP rr - read the pair from the stack, increment SP by 2
+            0xC1 | 0xD1 | 0xE1 | 0xF1 => {
+                let idx = (opcode >> 4) & 0x03;
+                let value = self.memory.read_word(self.sp); // read BEFORE moving sp
+                self.write_rr(idx, true, value); // use_af=true: index 3 == AF
+                self.sp = self.sp.wrapping_add(2); // reclaim the space
+                self.cycles += 12;
+            }
+
+            // CALL cc, a16 - conditional call
+            0xC4 | 0xCC | 0xD4 | 0xDC => {
+                let cc = (opcode >> 3) & 0x03;
+                let target = self.fetch_word(); // ALWAYS fetch (clears the operand)
+                if self.check_condition(cc) {
+                    self.sp = self.sp.wrapping_sub(2);
+                    self.memory.write_word(self.sp, self.pc); // push return addr
+                    self.pc = target;
+                    self.cycles += 24; //taken
+                } else {
+                    self.cycles += 12; // not taken
+                }
+            }
+
+            // RST t - call a fixed vector (t*8)
+            0xC7 | 0xCF | 0xD7 | 0xDF | 0xE7 | 0xEF | 0xF7 | 0xFF => {
+                let target = ((opcode >> 3) & 0x07) as u16 * 8; // bitc 5-3 -> vector address
+                self.sp = self.sp.wrapping_sub(2);
+                self.memory.write_word(self.sp, self.pc); // push return address
+                self.pc = target;
+                self.cycles += 16;
+            }
+
+            // RET - pop return address into pc
+            0xC9 => {
+                let addr = self.memory.read_word(self.sp); // read saved return
+                // address
+                self.sp = self.sp.wrapping_add(2); // reclaim stack space
+                self.pc = addr;
+                self.cycles += 16;
+            }
+
+            // CB prefix - fetch the second  opcode byte and decode the extended table
+            0xCB => {
+                let cb_opcode = self.fetch_byte();
+                self.execute_cb(cb_opcode);
+            }
+
+            // CALL a16 - push return address, jump to target
+            0xCD => {
+                let target = self.fetch_word(); // pc now points at the NEXT instruction
+                // (return addr)
+                self.sp = self.sp.wrapping_sub(2); // make room on the stack
+                self.memory.write_word(self.sp, self.pc); // push the return address
+                self.pc = target;
+                self.cycles += 24;
+            }
+
+            // RETI - return and enable interrupts
+            0xD9 => {
+                let addr = self.memory.read_word(self.sp);
+                self.sp = self.sp.wrapping_add(2);
+
+                self.pc = addr;
+                self.interrupts_enabled = true; // the only difference from RET
+                self.cycles += 16;
+            }
+
+            // JP (HL) - jump to address in HL (NOT a memory read)
+            0xE9 => {
+                //pc = HL, 4 cycles
+                self.pc = self.registers.hl();
                 self.cycles += 4;
             }
 
-            // ADD A, C
-            0x81 => {
-                self.alu_add(self.registers.c);
+            // DI - disable interrupts (clear IME)
+            0xF3 => {
+                self.interrupts_enabled = false;
                 self.cycles += 4;
             }
 
-            // ADD A, D
-            0x82 => {
-                self.alu_add(self.registers.d);
-                self.cycles += 4;
-            }
-
-            // ADD A, E
-            0x83 => {
-                self.alu_add(self.registers.e);
-                self.cycles += 4;
-            }
-
-            // ADD A, H
-            0x84 => {
-                self.alu_add(self.registers.h);
-                self.cycles += 4;
-            }
-
-            // ADD A, L
-            0x85 => {
-                self.alu_add(self.registers.l);
-                self.cycles += 4;
-            }
-
-            // ADD A, (HL) - Add value from memory at address HL
-            0x86 => {
-                let address = self.registers.hl();
-                let value = self.memory.read_byte(address);
-                self.alu_add(value);
-                self.cycles += 8; // Memory access takes 8 cycles
-            }
-
-            // ADD A, A
-            0x87 => {
-                self.alu_add(self.registers.a);
-                self.cycles += 4;
-            }
-
-            // ADC A, B
-            0x88 => {
-                self.alu_adc(self.registers.b);
-                self.cycles += 4;
-            }
-
-            // ADC A,C
-            0x89 => {
-                self.alu_adc(self.registers.c);
-                self.cycles += 4;
-            }
-
-            // ADC A,D
-            0x8A => {
-                self.alu_adc(self.registers.d);
-                self.cycles += 4;
-            }
-
-            // ADC A,E
-            0x8B => {
-                self.alu_adc(self.registers.e);
-                self.cycles += 4;
-            }
-
-            // ADC A,H
-            0x8C => {
-                self.alu_adc(self.registers.h);
-                self.cycles += 4;
-            }
-
-            // ADC A,L
-            0x8D => {
-                self.alu_adc(self.registers.l);
-                self.cycles += 4;
-            }
-
-            // ADC A,(HL)
-            0x8E => {
-                let address = self.registers.hl();
-                let value = self.memory.read_byte(address);
-                self.alu_adc(value);
-                self.cycles += 8;
-            }
-
-            // ADC A,A
-            0x8F => {
-                self.alu_adc(self.registers.a);
-                self.cycles += 4;
-            }
-
-            // SUB B
-            0x90 => {
-                self.alu_sub(self.registers.b);
-                self.cycles += 4;
-            }
-
-            // SUB C
-            0x91 => {
-                self.alu_sub(self.registers.c);
-                self.cycles += 4;
-            }
-
-            // SUB D
-            0x92 => {
-                self.alu_sub(self.registers.d);
-                self.cycles += 4;
-            }
-            // SUB E
-            0x93 => {
-                self.alu_sub(self.registers.e);
-                self.cycles += 4;
-            }
-            // SUB H
-            0x94 => {
-                self.alu_sub(self.registers.h);
-                self.cycles += 4;
-            }
-
-            // SUB L
-            0x95 => {
-                self.alu_sub(self.registers.l);
-                self.cycles += 4;
-            }
-
-            // SUB (HL)
-            0x96 => {
-                let address = self.registers.hl();
-                let value = self.memory.read_byte(address);
-                self.alu_sub(value);
-                self.cycles += 8;
-            }
-
-            // SUB A
-            0x97 => {
-                self.alu_sub(self.registers.a);
-                self.cycles += 4;
-            }
-
-            // SBC B
-            0x98 => {
-                self.alu_sbc(self.registers.b);
-                self.cycles += 4;
-            }
-
-            // SBC C
-            0x99 => {
-                self.alu_sbc(self.registers.c);
-                self.cycles += 4;
-            }
-
-            // SBC D
-            0x9A => {
-                self.alu_sbc(self.registers.d);
-                self.cycles += 4;
-            }
-
-            // SBC E
-            0x9B => {
-                self.alu_sbc(self.registers.e);
-                self.cycles += 4;
-            }
-
-            // SBC H
-            0x9C => {
-                self.alu_sbc(self.registers.h);
-                self.cycles += 4;
-            }
-
-            // SBC L
-            0x9D => {
-                self.alu_sbc(self.registers.l);
-                self.cycles += 4;
-            }
-
-            // SBC (HL)
-            0x9E => {
-                let address = self.registers.hl();
-                let value = self.memory.read_byte(address);
-                self.alu_sbc(value);
-                self.cycles += 8;
-            }
-
-            // SBC A
-            0x9F => {
-                self.alu_sbc(self.registers.a);
-                self.cycles += 4;
-            }
-
-            // AND B
-            0xA0 => {
-                self.alu_and(self.registers.b);
-                self.cycles += 4;
-            }
-
-            // AND C
-            0xA1 => {
-                self.alu_and(self.registers.c);
-                self.cycles += 4;
-            }
-
-            // AND D
-            0xA2 => {
-                self.alu_and(self.registers.d);
-                self.cycles += 4;
-            }
-
-            // AND E
-            0xA3 => {
-                self.alu_and(self.registers.e);
-                self.cycles += 4;
-            }
-
-            // AND H
-            0xA4 => {
-                self.alu_and(self.registers.h);
-                self.cycles += 4;
-            }
-
-            // AND L
-            0xA5 => {
-                self.alu_and(self.registers.l);
-                self.cycles += 4;
-            }
-
-            // AND (HL)
-            0xA6 => {
-                let address = self.registers.hl();
-                let value = self.memory.read_byte(address);
-
-                self.alu_and(value);
-                self.cycles += 8;
-            }
-
-            // AND A
-            0xA7 => {
-                self.alu_and(self.registers.a);
-                self.cycles += 4;
-            }
-
-            // XOR B
-            0xA8 => {
-                self.alu_xor(self.registers.b);
-                self.cycles += 4;
-            }
-
-            // XOR C
-            0xA9 => {
-                self.alu_xor(self.registers.c);
-                self.cycles += 4;
-            }
-
-            // XOR D
-            0xAA => {
-                self.alu_xor(self.registers.d);
-                self.cycles += 4;
-            }
-
-            // XOR E
-            0xAB => {
-                self.alu_xor(self.registers.e);
-                self.cycles += 4;
-            }
-
-            // XOR H
-            0xAC => {
-                self.alu_xor(self.registers.h);
-                self.cycles += 4;
-            }
-
-            // XOR L
-            0xAD => {
-                self.alu_xor(self.registers.l);
-                self.cycles += 4;
-            }
-
-            // XOR (HL)
-            0xAE => {
-                let address = self.registers.hl();
-                let value = self.memory.read_byte(address);
-                self.alu_xor(value);
-                self.cycles += 8;
-            }
-
-            // XOR A
-            0xAF => {
-                self.alu_xor(self.registers.a);
-                self.cycles += 4;
-            }
-
-            // OR B
-            0xB0 => {
-                self.alu_or(self.registers.b);
-                self.cycles += 4;
-            }
-
-            // OR C
-            0xB1 => {
-                self.alu_or(self.registers.c);
-                self.cycles += 4;
-            }
-            // OR D
-            0xB2 => {
-                self.alu_or(self.registers.d);
-                self.cycles += 4;
-            }
-
-            // OR E
-            0xB3 => {
-                self.alu_or(self.registers.e);
-                self.cycles += 4;
-            }
-
-            // OR H
-            0xB4 => {
-                self.alu_or(self.registers.h);
-                self.cycles += 4;
-            }
-
-            // OR L
-            0xB5 => {
-                self.alu_or(self.registers.l);
-                self.cycles += 4;
-            }
-
-            // OR HL
-            0xB6 => {
-                let address = self.registers.hl();
-                let value = self.memory.read_byte(address);
-                self.alu_or(value);
-                self.cycles += 8;
-            }
-
-            // OR A
-            0xB7 => {
-                self.alu_or(self.registers.a);
-                self.cycles += 4;
-            }
-
-            // CP B
-            0xB8 => {
-                self.alu_cp(self.registers.b);
-                self.cycles += 4;
-            }
-
-            // CP C
-            0xB9 => {
-                self.alu_cp(self.registers.c);
-                self.cycles += 4;
-            }
-
-            // CP D
-            0xBA => {
-                self.alu_cp(self.registers.d);
-                self.cycles += 4;
-            }
-
-            // CP E
-            0xBB => {
-                self.alu_cp(self.registers.e);
-                self.cycles += 4;
-            }
-
-            // CP H
-            0xBC => {
-                self.alu_cp(self.registers.h);
-                self.cycles += 4;
-            }
-
-            // CP L
-            0xBD => {
-                self.alu_cp(self.registers.l);
-                self.cycles += 4;
-            }
-
-            // CP HL
-            0xBE => {
-                let address = self.registers.hl();
-                let value = self.memory.read_byte(address);
-                self.alu_cp(value);
-                self.cycles += 8;
-            }
-
-            // CP A
-            0xBF => {
-                self.alu_cp(self.registers.a);
+            // EI - enable interrupts (set IME)
+            0xFB => {
+                self.interrupts_enabled = true;
                 self.cycles += 4;
             }
 
@@ -830,7 +739,189 @@ impl Cpu {
         }
     }
 
+    /// Decode and execute a CB-prefixed instruction.
+    fn execute_cb(&mut self, opcode: u8) {
+        let idx = opcode & 0x07; // bits 2-0: operand B,C,D,E,H,L,(HL),A
+        let group = opcode >> 6; // bits 7-6: 0=rot/shift, 1=BIT, 2=RES, 3=SET
+        let bit = (opcode >> 3) & 0x07; // bits 5-3: bit index (or rot/shift sub-op)
+
+        match group {
+            // rotate/shift family - sub-op selected by `bit`
+            0 => {
+                let value = self.read_operand(idx);
+                let carry_in = self.registers.flag_carry();
+                let (result, carry_out) = match bit {
+                    0 => {
+                        let c = value & 0x80 != 0;
+                        ((value << 1) | c as u8, c)
+                    } // RLC
+
+                    1 => {
+                        let c = value & 0x01 != 0;
+                        ((value >> 1) | (c as u8) << 7, c)
+                    } // RRC
+
+                    2 => {
+                        let c = value & 0x80 != 0;
+                        ((value << 1) | carry_in as u8, c)
+                    } // RL
+
+                    3 => {
+                        let c = value & 0x01 != 0;
+                        ((value >> 1) | (carry_in as u8) << 7, c)
+                    } // RR
+
+                    4 => {
+                        let c = value & 0x80 != 0;
+                        (value, c)
+                    } // SLA
+
+                    5 => {
+                        let c = value & 0x01 != 0;
+                        ((value >> 1) | (value & 0x80), c)
+                    } // SRA
+
+                    6 => (value.rotate_left(4), false), // SWAP
+
+                    7 => {
+                        let c = value & 0x01 != 0;
+                        (value >> 1, c)
+                    } // SRL
+
+                    _ => unreachable!(),
+                };
+                self.write_operand(idx, result);
+                self.registers.set_flag_zero(result == 0);
+                self.registers.set_flag_subtract(false);
+                self.registers.set_flag_half_carry(false);
+                self.registers.set_flag_carry(carry_out);
+                self.cycles += if idx == 6 { 16 } else { 8 };
+            }
+
+            // BIT b, r - test bit `bit` of operand; Z=!bit, N=0, H=1, C unaffected
+            1 => {
+                let value = self.read_operand(idx);
+                let is_set = (value >> bit) & 1 == 1;
+                self.registers.set_flag_zero(!is_set); // Z set when the tested bit is 0
+                self.registers.set_flag_subtract(false);
+                self.registers.set_flag_half_carry(true);
+                // carry flag is left untouched
+                self.cycles += if idx == 6 { 12 } else { 8 };
+            }
+
+            // RES b, r - clear bit `bit`
+            2 => {
+                let value = self.read_operand(idx);
+                self.write_operand(idx, value & !(1 << bit));
+                self.cycles += if idx == 6 { 16 } else { 8 };
+            }
+
+            // SET b, r - set bit `bit`
+            3 => {
+                let value = self.read_operand(idx);
+                self.write_operand(idx, value | (1 << bit));
+                self.cycles += if idx == 6 { 16 } else { 8 };
+            }
+
+            _ => unreachable!(),
+        }
+    }
+
     // ALU (Arithmetic Logic Unit) operations
+    // Read an 8-bit operand by its 3-bit encoding (0=B ... 6=(HL) ... 7=A).
+    fn read_operand(&self, idx: u8) -> u8 {
+        match idx {
+            0 => self.registers.b,
+            1 => self.registers.c,
+            2 => self.registers.d,
+            3 => self.registers.e,
+            4 => self.registers.h,
+            5 => self.registers.l,
+            6 => self.memory.read_byte(self.registers.hl()),
+            7 => self.registers.a,
+            _ => unreachable!(), // & 0x07 guarantees 0-7, but match must be exhaustive
+        }
+    }
+
+    // Write an 8-bit operand by its 3-bit encoding (0=B ... 6=(HL) ... 7=A)
+    fn write_operand(&mut self, idx: u8, value: u8) {
+        match idx {
+            0 => self.registers.b = value,
+            1 => self.registers.c = value,
+            2 => self.registers.d = value,
+            3 => self.registers.e = value,
+            4 => self.registers.h = value,
+            5 => self.registers.l = value,
+            6 => self.memory.write_byte(self.registers.hl(), value),
+            7 => self.registers.a = value,
+            _ => unreachable!(),
+        }
+    }
+
+    //
+    fn read_rr(&self, idx: u8, use_af: bool) -> u16 {
+        match idx {
+            0 => self.registers.bc(),
+            1 => self.registers.de(),
+            2 => self.registers.hl(),
+            3 => {
+                if use_af {
+                    self.registers.af()
+                } else {
+                    self.sp
+                }
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    fn write_rr(&mut self, idx: u8, use_af: bool, value: u16) {
+        match idx {
+            0 => self.registers.set_bc(value),
+            1 => self.registers.set_de(value),
+            2 => self.registers.set_hl(value),
+            3 => {
+                if use_af {
+                    self.registers.set_af(value) // rp2 table -> AF
+                } else {
+                    self.sp = value; // rp table -> SP (a plain field assignment)
+                }
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    // takes the 2-bit condiiton code from a conditional JP/JR/CALL/RET and returns
+    // whether the branch should be taken. No mutation (it only reafs flags -> &self),
+    // no break points, clean 4-way map
+    // The encoding (bits 4-3 of those opcodes):
+    // 0 -> NZ (take if Z flag is CLEAR)
+    // 1 -> Z  (take if Z flag is SET)
+    // 2 -> NC (take if Carry is CLEAR)
+    // 3 -> C  (take if Carry is SET)
+    fn check_condition(&self, cc: u8) -> bool {
+        match cc {
+            0 => !self.registers.flag_zero(),  // NZ
+            1 => self.registers.flag_zero(),   // Z
+            2 => !self.registers.flag_carry(), // NC
+            3 => self.registers.flag_carry(),  // C
+            _ => unreachable!(),
+        }
+    }
+
+    fn alu_dispatch(&mut self, op: u8, value: u8) {
+        match op {
+            0 => self.alu_add(value),
+            1 => self.alu_adc(value),
+            2 => self.alu_sub(value),
+            3 => self.alu_sbc(value),
+            4 => self.alu_and(value),
+            5 => self.alu_xor(value),
+            6 => self.alu_or(value),
+            7 => self.alu_cp(value),
+            _ => unreachable!(),
+        }
+    }
 
     fn alu_inc(&mut self, value: u8) -> u8 {
         let result = value.wrapping_add(1);
@@ -1081,6 +1172,8 @@ mod tests {
 
 #[cfg(test)]
 mod instruction_tests {
+    use crate::cpu;
+
     use super::*;
 
     // Helper function to create a CPU with a program loaded
@@ -1201,6 +1294,232 @@ mod instruction_tests {
                 assert_eq!(cpu.cycles, 4);
             }
         }
+    }
+
+    #[test]
+    fn test_ld_rr_d16() {
+        // LD SP, 0xFFFE - opcode 0x31, then the 16-bit value little-endian (low byte first)
+        let mut cpu = setup_cpu(vec![0x31, 0xFE, 0xFF]);
+        cpu.step();
+        assert_eq!(cpu.sp, 0xFFFE); // the two bytes reassembled into the word
+        assert_eq!(cpu.cycles, 12);
+
+        // LD, BC 0x1234 - opcode 0x01, value bytes 0x34 then 0x12
+        let mut cpu = setup_cpu(vec![0x01, 0x34, 0x12]);
+        cpu.step();
+        assert_eq!(cpu.registers.bc(), 0x1234);
+    }
+
+    #[test]
+    fn test_inc_dec_rr() {
+        // INC BC normally
+        let mut cpu = setup_cpu(vec![0x03]); // INC BC
+        cpu.registers.set_bc(0x1234);
+        cpu.step();
+        assert_eq!(cpu.registers.bc(), 0x1235);
+        assert_eq!(cpu.cycles, 8);
+
+        // INC wraps 0xFFFF -> 0x0000 AND sets NO flags (Z must stay clear)
+        let mut cpu = setup_cpu(vec![0x23]); // INC HL
+        cpu.registers.set_hl(0xFFFF);
+        cpu.step();
+        assert_eq!(cpu.registers.hl(), 0x0000);
+        assert!(!cpu.registers.flag_zero()); // result is 0 but Z is NOT set
+
+        // DEC wraps 0x0000 -> 0xFFFF
+        let mut cpu = setup_cpu(vec![0x0B]); // DEC BC
+        cpu.registers.set_bc(0x0000);
+        cpu.step();
+        assert_eq!(cpu.registers.bc(), 0xFFFF);
+    }
+
+    #[test]
+    fn test_add_hl_rr() {
+        // half-carry at bit 11: 0x0FFF + 0x0001 = 0x1000
+        let mut cpu = setup_cpu(vec![0x09]); // ADD HL, BC
+        cpu.registers.set_hl(0x0FFF);
+        cpu.registers.set_bc(0x0001);
+        cpu.step();
+        assert_eq!(cpu.registers.hl(), 0x1000);
+        assert!(cpu.registers.flag_half_carry()); //bit-11 carry
+        assert!(!cpu.registers.flag_carry()); // no bit-15 carry
+        assert!(!cpu.registers.flag_subtract());
+
+        // full carry at bit 15, AND Z must survice
+        let mut cpu = setup_cpu(vec![0x09]); // ADD HL, BC
+        cpu.registers.set_hl(0xFFFF);
+        cpu.registers.set_bc(0x0002);
+        cpu.registers.set_flag_zero(true); // set Z BEFORE the add
+        cpu.step();
+        assert_eq!(cpu.registers.hl(), 0x0001);
+        assert!(cpu.registers.flag_carry());
+        assert!(cpu.registers.flag_zero()); // Z untouched, even though result is 0x0000
+    }
+
+    #[test]
+    fn test_ld_a_rr() {
+        // LD A, (BC) - read a byte BC points at
+        let mut cpu = setup_cpu(vec![0x0A]); // LD A, (BC)
+        cpu.memory.write_byte(0xC000, 0x42); // plant a value in WRAM
+        cpu.registers.set_bc(0xC000);
+        cpu.step();
+        assert_eq!(cpu.registers.a, 0x42);
+
+        // LD A, (HL+) - read, then HL must increment
+        let mut cpu = setup_cpu(vec![0x2A]); // LD A, (HL+)
+        cpu.memory.write_byte(0xC000, 0x99);
+        cpu.registers.set_hl(0xC000);
+        cpu.step();
+        assert_eq!(cpu.registers.a, 0x99);
+        assert_eq!(cpu.registers.hl(), 0xC001); // HL advanced past the byte it just read
+    }
+
+    #[test]
+    fn test_jp_cc_not_taken_still_advances_pc() {
+        // condition FALSE: Z set, but JP NZ wants Z clear -> not taken
+        let mut cpu = setup_cpu(vec![0xC2, 0x34, 0x12]);
+        cpu.registers.set_flag_zero(true);
+        cpu.step();
+        assert_eq!(cpu.pc, 3); // consumed opcode + 2 operand bytes
+        assert_eq!(cpu.cycles, 12); // not-taken cost
+        // assert pc == 3
+        // // assert cycles == 12
+    }
+
+    #[test]
+    fn test_jp_cc_taken() {
+        // condition TRUE: Z clear, JP NZ takes the branch
+        let mut cpu = setup_cpu(vec![0xC2, 0x34, 0x12]);
+        cpu.registers.set_flag_zero(false);
+        cpu.step();
+        assert_eq!(cpu.pc, 0x1234); // jumpted to target
+        assert_eq!(cpu.cycles, 16); // taken cost
+        // assert pc == 0x1234
+        // assert cycles == 16
+    }
+
+    #[test]
+    fn test_jr_negative_offset() {
+        // JR -2 (0xFE as i8 == -2)
+        let mut cpu = setup_cpu(vec![0x18, 0xFE]);
+        cpu.step();
+        assert_eq!(cpu.pc, 0); // 2+ (-2); would be 256 if cast were unsigned
+        assert_eq!(cpu.cycles, 12);
+    }
+
+    #[test]
+    fn test_jr_cc_not_taken() {
+        let mut cpu = setup_cpu(vec![0x20, 0x05]);
+        cpu.registers.set_flag_zero(true);
+        cpu.step();
+        assert_eq!(cpu.pc, 2);
+        assert_eq!(cpu.cycles, 8);
+    }
+
+    #[test]
+    fn test_push_pop_roundstrip() {
+        let mut cpu = setup_cpu(vec![0xC5, 0xD1]);
+        cpu.registers.set_bc(0xBEEF);
+        let sp_before = cpu.sp;
+
+        cpu.step(); // PUSH BC
+        assert_eq!(cpu.sp, sp_before.wrapping_sub(2)); //stack grew down by 2
+
+        cpu.step(); // POP DE
+        assert_eq!(cpu.registers.de(), 0xBEEF); // value survived the round-trip
+        assert_eq!(cpu.sp, sp_before); // sp balanced back to start
+    }
+
+    #[test]
+    fn test_call_ret_roundtrip() {
+        // CALL 0x0005 at addr 0; RET sits at addr 5
+        let mut cpu = setup_cpu(vec![0xCD, 0x05, 0x00, 0x00, 0x00, 0xC9]);
+        let sp_before = cpu.sp;
+
+        cpu.step(); // CALL 0x0005
+        assert_eq!(cpu.pc, 0x0005); // jumped into the subroutine
+        assert_eq!(cpu.sp, sp_before.wrapping_sub(2)); // pushed 2 bytes
+        assert_eq!(cpu.memory.read_word(cpu.sp), 3); // return address == 3 (instr after CALL)
+
+        cpu.step(); // RET
+        assert_eq!(cpu.pc, 3); // resumed right after the CALL
+        assert_eq!(cpu.sp, sp_before); // stack balanced backL
+    }
+
+    #[test]
+    fn test_ret_cc_not_taken() {
+        let mut cpu = setup_cpu(vec![0xC0]); // RET NZ
+        cpu.registers.set_flag_zero(true); // Z set -> NZ false -> NOT taken
+        let sp_before = cpu.sp;
+        cpu.step();
+        assert_eq!(cpu.pc, 1); // only the opcode consumed; no stack jump
+        assert_eq!(cpu.sp, sp_before); // stack untouched, we did NOT pop
+        assert_eq!(cpu.cycles, 8); // not-taken cost
+    }
+
+    #[test]
+    fn test_ret_pushes_and_jumps() {
+        let mut cpu = setup_cpu(vec![0xEF]); // RST 0x28
+        let sp_before = cpu.sp;
+        cpu.step();
+        assert_eq!(cpu.pc, 0x28); // jumped to vector 5*8 = 0x28
+        assert_eq!(cpu.sp, sp_before.wrapping_sub(2)); // pushed 2 bytes
+        assert_eq!(cpu.memory.read_word(cpu.sp), 1); // return addr = 1 (byte after the 1-byte RST)
+    }
+
+    #[test]
+    fn test_cb_bit() {
+        // BIT 7, A (0xCB, 0x7F) with bit 7 SET -> Z should be CLEAR
+        let mut cpu = setup_cpu(vec![0xCB, 0x7F]);
+        cpu.registers.a = 0x80; // bit 7 = 1 
+        cpu.registers.set_flag_carry(true); // plant a carry to prove it survives
+        cpu.step();
+        assert!(!cpu.registers.flag_zero()); // bit is set -> Z clear (key inversion)
+        assert!(!cpu.registers.flag_subtract()); // N = 0
+        assert!(cpu.registers.flag_half_carry()); // H = 1
+        assert!(cpu.registers.flag_carry()); // C preserved (never touched)
+        assert_eq!(cpu.cycles, 8);
+
+        // BIT 7, A with bit 7 CLEAR -> Z should be SET
+        let mut cpu = setup_cpu(vec![0xCB, 0x7F]);
+        cpu.registers.a = 0x00;
+        cpu.step();
+        assert!(cpu.registers.flag_zero()); // bit is clear -> Z set
+    }
+
+    #[test]
+    fn test_cb_set_res() {
+        // SET 3, B with B = 0x00 -> only bit 3 turns on
+        let mut cpu = setup_cpu(vec![0xCB, 0xD8]);
+        cpu.registers.b = 0x00;
+        cpu.step();
+        assert_eq!(cpu.registers.b, 0x08); // 0000_1000
+        assert_eq!(cpu.cycles, 8); // register operand
+
+        // RES 3, B with B = 0xFF -> only bit 3 turns off, neighbors survive
+        let mut cpu = setup_cpu(vec![0xCB, 0x98]);
+        cpu.registers.b = 0xFF;
+        cpu.step();
+        assert_eq!(cpu.registers.b, 0xF7); // 1111_0111, The discriminating assert
+    }
+
+    #[test]
+    fn test_cb_rl_and_sra() {
+        // RL B: the carry flag flows INTO bit 0
+        let mut cpu = setup_cpu(vec![0xCB, 0x10]);
+        cpu.registers.b = 0x00;
+        cpu.registers.set_flag_carry(true); // this 1 should land in bit 0
+        cpu.step();
+        assert_eq!(cpu.registers.b, 0x01); // carry_in -> bit 0 (RLC would give 0x00)
+        assert!(!cpu.registers.flag_carry()); // old bit 8 was 0 -> carry out clear
+        assert!(!cpu.registers.flag_zero()); // result is nonzero
+
+        // SRA A: the sign bit (bit 7) is preserved
+        let mut cpu = setup_cpu(vec![0xCB, 0x2F]);
+        cpu.registers.a = 0x80;
+        cpu.step();
+        assert_eq!(cpu.registers.a, 0xC0); // bit 7 stays set (SRL would give 0x40)
+        assert!(!cpu.registers.flag_carry()); // old bit 0 was 0
     }
 
     #[test]
@@ -1480,5 +1799,113 @@ mod instruction_tests {
         assert!(cpu.registers.flag_subtract());
         assert!(!cpu.registers.flag_carry()); // A not less than B
     }
-}
 
+    #[test]
+    fn test_write_rr_roundtrip() {
+        let mut cpu = Cpu::new();
+        cpu.write_rr(2, false, 0x1234); // write HL
+        assert_eq!(cpu.read_rr(2, false), 0x1234); // read it back
+        cpu.write_rr(3, false, 0xFFFE); // index 3, rp - SP
+        assert_eq!(cpu.sp, 0xFFFE);
+        cpu.write_rr(3, true, 0x12F0); // index 3, rp2 -> AF
+        assert_eq!(cpu.registers.af(), 0x12F0);
+    }
+
+    #[test]
+    fn test_check_condiiton() {
+        let mut cpu = Cpu::new();
+
+        // Zer set, Carry clear
+        cpu.registers.set_flag_zero(true);
+        cpu.registers.set_flag_carry(false);
+        assert!(!cpu.check_condition(0)); // NZ: Z is set, so DON'T take
+        assert!(cpu.check_condition(1)); // Z: Z is set, so take
+        assert!(cpu.check_condition(2)); // NC: Carry clear, so take
+        assert!(!cpu.check_condition(3)); // C: Carry clear, so DON'T take
+    }
+
+    #[test]
+    fn test_ei_di() {
+        // EI sets IME
+        let mut cpu = setup_cpu(vec![0xFB]);
+        cpu.interrupts_enabled = false;
+        cpu.step();
+        assert!(cpu.interrupts_enabled);
+        assert_eq!(cpu.cycles, 4);
+
+        // DI clears IME
+        let mut cpu = setup_cpu(vec![0xF3]);
+        cpu.interrupts_enabled = true;
+        cpu.step();
+        assert!(!cpu.interrupts_enabled);
+    }
+
+    #[test]
+    fn test_interrupt_dispatch() {
+        let mut cpu = setup_cpu(vec![]);
+        cpu.pc = 0x0150;
+        cpu.interrupts_enabled = true;
+        cpu.memory.write_byte(0xFFFF, 0b0000_0100); // IE: enable Timer (bit 2)
+        cpu.memory.write_byte(0xFF0F, 0b0000_0100); // IF: request Timer
+        let sp_before = cpu.sp;
+
+        cpu.handle_interrupts();
+
+        assert_eq!(cpu.pc, 0x0050); // jumpted to Timer vector (0x40 + 2*8)
+        assert!(!cpu.interrupts_enabled); // IME cleared during handler
+        assert_eq!(cpu.memory.read_byte(0xFF0F) & 0x04, 0); // IF bit 2 acknowledged (cleared)
+        assert_eq!(cpu.sp, sp_before.wrapping_sub(2)); // pushed return address
+        assert_eq!(cpu.memory.read_word(cpu.sp), 0x0150); // return addr == old pc
+        assert_eq!(cpu.cycles, 20);
+    }
+
+    #[test]
+    fn test_interrupt_ime_off_wakes_halt_no_dispatch() {
+        let mut cpu = setup_cpu(vec![]);
+        cpu.pc = 0x0150;
+        cpu.halted = true;
+        cpu.interrupts_enabled = false; // IME OFF
+        cpu.memory.write_byte(0xFFFF, 0b0000_0100); // enable Timer
+        cpu.memory.write_byte(0xFF0F, 0b0000_0100); // request Timer
+        cpu.handle_interrupts();
+
+        assert!(!cpu.halted); // woke from HALF
+        assert_eq!(cpu.pc, 0x0150); // .. but did NOT dispatch
+        assert_eq!(cpu.memory.read_byte(0xFF0F) & 0x04, 0x04); // IF still set (not acknowledged)
+    }
+
+    #[test]
+    fn test_timer_overflow_requests_interrupt() {
+        let mut cpu = setup_cpu(vec![]);
+        cpu.memory.write_byte(0xFF07, 0b0000_0101); // TAC: enabled (bit2), period 16
+        cpu.memory.write_byte(0xFF06, 0xAB); // TMA = reload value
+        cpu.memory.write_byte(0xFF05, 0xFF); // TIMA one tick from overflow
+
+        cpu.step_timer(16); // exactly one tick at period 16
+
+        assert_eq!(cpu.memory.read_byte(0xFF05), 0xAB); // reloaded from TMA (NOT 0x00)
+        assert_eq!(cpu.memory.read_byte(0xFF0F) & 0x04, 0x04); // Time interrupt requested (IF bit 2)
+    }
+
+    #[test]
+    fn test_timer_counts_without_overflow() {
+        let mut cpu = setup_cpu(vec![]);
+        cpu.memory.write_byte(0xFF07, 0b0000_0101); // enabled, period 16
+        cpu.memory.write_byte(0xFF05, 0x00);
+
+        cpu.step_timer(16);
+        assert_eq!(cpu.memory.read_byte(0xFF05), 0x01); // ticked once
+        assert_eq!(cpu.memory.read_byte(0xFF05) & 0x04, 0x00); // no interrupt yet
+    }
+
+    #[test]
+    fn test_timer_disabled_does_not_count() {
+        let mut cpu = setup_cpu(vec![]);
+        cpu.memory.write_byte(0xFF07, 0b0000_0001); // period bits set, but ENABLE
+        // (bit 2) CLEAR
+        cpu.memory.write_byte(0xFF05, 0x42);
+        cpu.step_timer(1000);
+
+        assert_eq!(cpu.memory.read_byte(0xFF05), 0x42); // unchanged - timer is off
+    }
+}
