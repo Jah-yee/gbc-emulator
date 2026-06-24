@@ -191,6 +191,7 @@ pub struct Cpu {
     pub interrupts_enabled: bool,
     pub div_counter: u16,  // accumulates cycles for DIV (DIV = its high byte)
     pub tima_counter: u32, // accumulates cycles for TIMA
+    pub ppu_dots: u32,     // accumulates cycles within the current scanline
 }
 
 impl Cpu {
@@ -205,6 +206,7 @@ impl Cpu {
             interrupts_enabled: false,
             div_counter: 0,
             tima_counter: 0,
+            ppu_dots: 0,
         }
     }
 
@@ -217,6 +219,7 @@ impl Cpu {
             // When halted, just increment cycles
             self.cycles += 4;
             self.step_timer(4);
+            self.step_ppu(4);
             return;
         }
 
@@ -228,6 +231,7 @@ impl Cpu {
         self.execute(opcode);
         let elapsed = (self.cycles - before) as u32;
         self.step_timer(elapsed);
+        self.step_ppu(elapsed);
     }
 
     /// Advance the timer by the number of cycles the last instruction took.
@@ -266,6 +270,54 @@ impl Cpu {
                 self.memory.write_byte(0xFF05, tima + 1);
             }
         }
+    }
+
+    /// Advance the PPU by the cycles the last instruction took
+    fn step_ppu(&mut self, cycles: u32) {
+        // 1. accumulate dots for the current scanline
+        // add `cycles` to self.ppu_dots
+        self.ppu_dots += cycles;
+
+        // 2. each time a full scanline (456 dots) has elapsed ...
+        while self.ppu_dots >= 456 {
+            self.ppu_dots -= 456;
+
+            // 3. read LY, compute the next scanline (wrap 153 -> 0), write it back
+            let ly = self.memory.read_byte(0xFF44);
+            let next_ly = if ly >= 153 { 0 } else { ly + 1 };
+            self.memory.write_byte(0xFF44, next_ly);
+
+            // 4. start of VBlank -> request the VBlank interrupt
+            if next_ly == 144 {
+                self.request_interrupt(0);
+            }
+        }
+        self.update_stat();
+    }
+
+    /// Recompute STAT's status bits (mode + LYC coincidence) from LY + dot position
+    fn update_stat(&mut self) {
+        let ly = self.memory.read_byte(0xFF44);
+
+        // current mode
+        let mode: u8 = if ly >= 144 {
+            1
+        } else if self.ppu_dots < 80 {
+            2
+        } else if self.ppu_dots < 252 {
+            3
+        } else {
+            0
+        };
+
+        // LYC=LY coincidence
+        let lyc = self.memory.read_byte(0xFF45);
+        let coincidence = ly == lyc; // true when ly equals lyc
+
+        // write bits 0-2, PRESERVING bits 3-7 (the game's enable bits)
+        let stat = self.memory.read_byte(0xFF41);
+        let stat = (stat & !7) | mode | (coincidence as u8) << 2;
+        self.memory.write_byte(0xFF41, stat);
     }
 
     /// Request an interrupt by setting its IF (0xFF0F) bit. bit: 0=VBlank .. 4=Joypad
@@ -1172,6 +1224,8 @@ mod tests {
 
 #[cfg(test)]
 mod instruction_tests {
+    use std::fs::copy;
+
     use crate::cpu;
 
     use super::*;
@@ -1907,5 +1961,70 @@ mod instruction_tests {
         cpu.step_timer(1000);
 
         assert_eq!(cpu.memory.read_byte(0xFF05), 0x42); // unchanged - timer is off
+    }
+
+    #[test]
+    fn test_ppu_advances_ly_each_scanline() {
+        let mut cpu = setup_cpu(vec![]);
+        assert_eq!(cpu.memory.read_byte(0xFF44), 0x00);
+
+        cpu.step_ppu(456); // exactly one scanline
+        assert_eq!(cpu.memory.read_byte(0xFF44), 1);
+
+        cpu.step_ppu(456); // another scanline
+        assert_eq!(cpu.memory.read_byte(0xFF44), 2);
+    }
+
+    #[test]
+    fn test_ppu_requests_vblank_at_line_144() {
+        let mut cpu = setup_cpu(vec![]);
+        // drive the beam from LY=0 up to the start of VBlank (line 144)
+        cpu.step_ppu(456 * 144);
+
+        assert_eq!(cpu.memory.read_byte(0xFF44), 144);
+        assert_eq!(cpu.memory.read_byte(0xFF0F) & 0x01, 0x01); // VBlank requested (IF bit 0)
+    }
+
+    #[test]
+    fn test_ppu_ly_wraps_after_153() {
+        let mut cpu = setup_cpu(vec![]);
+        // a full frame is 154 scanlines; after it LY should be back at 0
+        cpu.step_ppu(456 * 154);
+
+        assert_eq!(cpu.memory.read_byte(0xFF44), 0);
+    }
+
+    #[test]
+    fn test_ppu_mode_progreses_with_scanline() {
+        let mut cpu = setup_cpu(vec![]);
+        cpu.step_ppu(4); // dot 4 -> OAM scan
+        assert_eq!(cpu.memory.read_byte(0xFF41) & 0b11, 2);
+
+        cpu.step_ppu(100); // dot 104 -> Drawing
+        assert_eq!(cpu.memory.read_byte(0xFF41) & 0b11, 3);
+
+        cpu.step_ppu(200); // dot 304 -> HBlank
+        assert_eq!(cpu.memory.read_byte(0xFF41) & 0b11, 0);
+    }
+
+    #[test]
+    fn test_stat_preserves_enable_bits_and_sets_coincidence() {
+        let mut cpu = setup_cpu(vec![]);
+        cpu.memory.write_byte(0xFF45, 0x00); // LYC = 0 (matches starting LY)
+        cpu.memory.write_byte(0xFF41, 0b0111_1000); // game sets all 4 enable bits
+        cpu.step_ppu(4);
+
+        let stat = cpu.memory.read_byte(0xFF41);
+        assert_eq!(stat & 0b0111_1000, 0b0111_1000); // the game's enable bits (3-6) survived the
+        // PPU's status write
+
+        assert_eq!(stat & 0x04, 0x04); // LYC == LY, so the coincidence flag (bit 2) is set
+    }
+
+    #[test]
+    fn test_ppu_mode_is_blank_on_line_144() {
+        let mut cpu = setup_cpu(vec![]);
+        cpu.step_ppu(456 * 144); // LY = 144 -> VBlank
+        assert_eq!(cpu.memory.read_byte(0xFF41) & 0b11, 1);
     }
 }
