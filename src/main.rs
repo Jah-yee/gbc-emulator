@@ -8,43 +8,41 @@ use cpu::Cpu;
 fn main() {
     let mut cpu = Cpu::new();
 
-    // Load a simple test program
-    // This program: LD A, 0x05; LD B, 0x03; ADD A, B; HALT
-    let program = vec![
-        0x3E, 0x05, // LD A, 5
-        0x06, 0x03, // LD B, c
-        0x80, // ADD A, B (A should not be 8)
-        0x76, // HALT
-    ];
-
-    // Write program starting at 0x0100 where PC starts
-    // pad the ROM with NOPs up to 0x0100
-    // for (i, &byte) in program.iter().enumerate() {
-    //     cpu.memory.write_byte(0x0100 + i as u16, byte);
-    // }
-
-
-    // Build a ROM:
-    // 0x0000..=0x00FF = NOP (0x00)
-    // 0x0100..        = program
-    let mut rom = vec![0x00; 0x0100 + program.len()];
-    rom[0x0100..0x0100 + program.len()].copy_from_slice(&program);
-
-    // IMPORTANT: load the padded ROM, not just `program`
-    cpu.memory.load_rom(&rom);
-
-
-    // Run the CPU for a few steps
-    for _ in 0..10 {
-        if cpu.halted {
-            break;
-        }
-        cpu.step();
-        println!("PC: 0x{:04X}, A: 0x{:02X}, B: 0x{:02X}, Cycles: {}",
-                cpu.pc, cpu.registers.a, cpu.registers.b, cpu.cycles);
+    // Paint tile #1: every row uses the 0x3C/0x7E "curve" pattern.
+    for row in 0..8u16 {
+        cpu.memory.write_byte(0x8010 + row * 2, 0x3C);
+        cpu.memory.write_byte(0x8011 + row * 2, 0x7E);
     }
 
-    println!("\nFinal State:");
-    println!("A: 0x{:02X} (should be 0x08)", cpu.registers.a);
-    println!("B: 0x{:02X} (should be 0x03)", cpu.registers.b);
+    // Fill the 32x32 background map with tile #1
+    for i in 0..(32 * 32u16) {
+        cpu.memory.write_byte(0x9800 + i, 0x01);
+    }
+    cpu.memory.write_byte(0xFF47, 0xE4); // identity palette (LCDC already 0x91)
+
+    // A HALT at 0x0100 so the CPU idles; the PPU keeps running on elapsed cycles.
+    let mut rom = vec![0x00; 0x0101];
+    rom[0x0100] = 0x76; // HALT
+    cpu.memory.load_rom(&rom);
+
+    // Run ~one frame (70224 cycles; halted steps are 4 cycles each).
+    for _ in 0..20000 {
+        cpu.step();
+    }
+
+    print_frame(&cpu);
 }
+
+fn print_frame(cpu: &Cpu) {
+    const SHADES: [char; 4] = [' ', '.', '+', '#']; // 0 =lightest .. 3 =darkest
+
+    for y in (0..144).step_by(2) {
+        let mut line = String::new();
+        for x in (0..160).step_by(2) {
+            let shade = cpu.framebuffer[y * 160 + x];
+            line.push(SHADES[shade as usize]);
+        }
+        println!("{line}");
+    }
+}
+
