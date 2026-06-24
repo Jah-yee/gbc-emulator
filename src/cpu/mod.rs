@@ -276,6 +276,14 @@ impl Cpu {
 
     /// Advance the PPU by the cycles the last instruction took
     fn step_ppu(&mut self, cycles: u32) {
+        let lcdc = self.memory.read_byte(0xFF40);
+        if lcdc & 0x80 == 0 {
+            // LCD off: reset to lie 0, no timing, no draw
+            self.ppu_dots = 0;
+            self.memory.write_byte(0xFF44, 0);
+            return;
+        }
+
         // 1. accumulate dots for the current scanline
         // add `cycles` to self.ppu_dots
         self.ppu_dots += cycles;
@@ -286,6 +294,10 @@ impl Cpu {
 
             // 3. read LY, compute the next scanline (wrap 153 -> 0), write it back
             let ly = self.memory.read_byte(0xFF44);
+
+            if ly < 144 {
+                self.render_scanline(ly);
+            }
             let next_ly = if ly >= 153 { 0 } else { ly + 1 };
             self.memory.write_byte(0xFF44, next_ly);
 
@@ -356,6 +368,12 @@ impl Cpu {
         let scx = self.memory.read_byte(0xFF43);
         let lcdc = self.memory.read_byte(0xFF40);
         let bgp = self.memory.read_byte(0xFF47);
+        if lcdc & 0x01 == 0 {
+            for x in 0..160usize {
+                self.framebuffer[ly as usize * 160 + x] = 0;
+            }
+            return;
+        }
 
         let map_base: u16 = if (lcdc & 0x08) != 0 { 0x9C00 } else { 0x9800 };
 
@@ -2166,7 +2184,7 @@ mod instruction_tests {
         cpu.memory.write_byte(0x9800, 0x01); // map (0,0) -> tile #1
         cpu.memory.write_byte(0xFF42, 0); // SCY = 0
         cpu.memory.write_byte(0xFF43, 0); // SCX = 0
-        cpu.memory.write_byte(0xFF40, 0b0001_0000); // LCDC bit 4 = unsigned 0x8000
+        cpu.memory.write_byte(0xFF40, 0b0001_0001); // LCDC: unsigned 0x8000 data + BG enable
         // data
         cpu.memory.write_byte(0xFF47, 0xE4); // BGP = identity (id n -> shade n)
 
@@ -2192,9 +2210,43 @@ mod instruction_tests {
         cpu.memory.write_byte(0x8FF0, 0x3c); // tile -1, row 0 (0x9000 -16)
         cpu.memory.write_byte(0x8FF1, 0x7E);
         cpu.memory.write_byte(0x9800, 0xFF); // map (0,0) -> tile index 0xFF (-1)
-        cpu.memory.write_byte(0xFF40, 0x00); // LCD bit4=0 -> signed 0x9000 mode
+        cpu.memory.write_byte(0xFF40, 0x01); // bit4=0 signed 0x9000 mode + BG enable
         cpu.memory.write_byte(0xFF47, 0xE4); // identity palette
         cpu.render_scanline(0);
         assert_eq!(&cpu.framebuffer[0..8], &[0, 2, 3, 3, 3, 3, 2, 0]);
+    }
+
+    #[test]
+    fn test_ppu_renders_line_via_step() {
+        let mut cpu = setup_cpu(vec![]);
+        cpu.memory.write_byte(0x8010, 0x3C); // tile #1 row 0 
+        cpu.memory.write_byte(0x8011, 0x7E);
+        cpu.memory.write_byte(0x9800, 0x01); // map (0,0) -> tile #1
+        cpu.memory.write_byte(0xFF40, 0b1001_0001); // LCDC: LCD on + unsigned data + BG enable
+        cpu.memory.write_byte(0xFF47, 0xE4); // identity palette
+
+        cpu.step_ppu(456); // complete scanline 0 -> renders it, LY -> 1 
+
+        assert_eq!(&cpu.framebuffer[0..8], &[0, 2, 3, 3, 3, 3, 2, 0]);
+    }
+    #[test]
+    fn test_ppu_lcd_disabled_holds_ly_zero() {
+        let mut cpu = setup_cpu(vec![]);
+        cpu.memory.write_byte(0xFF40, 0x00); // LCD off (bit 7 clear)
+        cpu.step_ppu(456 * 5); // would normally advance LY several lines
+        assert_eq!(cpu.memory.read_byte(0xFF44), 0); // LY pinned at 0
+    }
+
+    #[test]
+    fn test_ppu_bg_disabled_renders_blank() {
+        let mut cpu = setup_cpu(vec![]);
+        cpu.memory.write_byte(0x8010, 0x3C); // a real tile is present...
+        cpu.memory.write_byte(0x8011, 0x7E);
+        cpu.memory.write_byte(0x9800, 0x01);
+        cpu.memory.write_byte(0xFF47, 0xE4);
+        cpu.memory.write_byte(0xFF40, 0b1001_0000); // LCD on (bit7), data 0x8000 (bit4), BG OFF
+        // (bit0=0)
+        cpu.render_scanline(0);
+        assert_eq!(&cpu.framebuffer[0..8], &[0; 8]); // ...but BG-disable blanks it
     }
 }

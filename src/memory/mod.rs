@@ -31,7 +31,7 @@ pub struct Memory {
 
 impl Memory {
     pub fn new() -> Self {
-        Self {
+        let mut memory = Self {
             rom_bank_0: [0; 0x4000],
             rom_bank_n: [0; 0x4000],
             vram: [0; 0x2000],
@@ -41,7 +41,10 @@ impl Memory {
             io_registers: [0; 0x80],
             hram: [0; 0x7F],
             ie_register: 0,
-        }
+        };
+        // Post-boot register defaults (values the boot ROM leaves behind).
+        memory.io_registers[0x40] = 0x91; // LCDC: LCD on, BG on, 0x8000 tile data
+        memory
     }
 
     pub fn read_byte(&self, address: u16) -> u8 {
