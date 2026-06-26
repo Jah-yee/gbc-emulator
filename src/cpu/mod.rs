@@ -872,6 +872,50 @@ impl Cpu {
                 self.cycles += 4;
             }
 
+            // LDH (a8), A — write A to high memory 0xFF00+n
+            0xE0 => {
+                let n = self.fetch_byte();
+                let addr = 0xFF00 + n as u16;
+                self.memory.write_byte(addr, self.registers.a);
+                self.cycles += 12;
+            }
+
+            // LDH A, (a8) — read high memory 0xFF00+n into A
+            0xF0 => {
+                let n = self.fetch_byte();
+                let addr = 0xFF00 + n as u16;
+                self.registers.a = self.memory.read_byte(addr);
+                self.cycles += 12;
+            }
+
+            // LD (C), A — write A to high memory 0xFF00+C
+            0xE2 => {
+                let addr = 0xFF00 + self.registers.c as u16;
+                self.memory.write_byte(addr, self.registers.a);
+                self.cycles += 8;
+            }
+
+            // LD A, (C) — read high memory 0xFF00+C into A
+            0xF2 => {
+                let addr = 0xFF00 + self.registers.c as u16;
+                self.registers.a = self.memory.read_byte(addr);
+                self.cycles += 8;
+            }
+
+            // LD (a16), A — write A to absolute 16-bit address
+            0xEA => {
+                let addr = self.fetch_word();
+                self.memory.write_byte(addr, self.registers.a);
+                self.cycles += 16;
+            }
+
+            // LD A, (a16) — read absolute 16-bit address into A
+            0xFA => {
+                let addr = self.fetch_word();
+                self.registers.a = self.memory.read_byte(addr);
+                self.cycles += 16;
+            }
+
             //...so I need to implement all 256 opcodes?
             _ => panic!(
                 "Unimplemented opcode: 0x{:02X} at PC: 0x{:04X}",
