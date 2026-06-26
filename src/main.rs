@@ -5,44 +5,128 @@ mod memory;
 
 use cpu::Cpu;
 
-fn main() {
-    let mut cpu = Cpu::new();
-
-    // Paint tile #1: every row uses the 0x3C/0x7E "curve" pattern.
+/// Paint a teset pattern into VRAM, then load a HALT so the CPU idles
+/// while the PPU keeps rendering on elapsed cycles.
+fn setup_demo(cpu: &mut Cpu) {
     for row in 0..8u16 {
         cpu.memory.write_byte(0x8010 + row * 2, 0x3C);
         cpu.memory.write_byte(0x8011 + row * 2, 0x7E);
     }
 
-    // Fill the 32x32 background map with tile #1
     for i in 0..(32 * 32u16) {
         cpu.memory.write_byte(0x9800 + i, 0x01);
     }
-    cpu.memory.write_byte(0xFF47, 0xE4); // identity palette (LCDC already 0x91)
 
-    // A HALT at 0x0100 so the CPU idles; the PPU keeps running on elapsed cycles.
+    cpu.memory.write_byte(0xFF47, 0xE4); // BGP identity: 11_10_01_00
+
     let mut rom = vec![0x00; 0x0101];
     rom[0x0100] = 0x76; // HALT
     cpu.memory.load_rom(&rom);
-
-    // Run ~one frame (70224 cycles; halted steps are 4 cycles each).
-    for _ in 0..20000 {
-        cpu.step();
-    }
-
-    print_frame(&cpu);
 }
 
-fn print_frame(cpu: &Cpu) {
+/// Run roughly one frame *~70224 cycles; halted steps are 4 cycles each
+fn run_one_frame(cpu: &mut Cpu) {
+    for _ in 0..17556 {
+        cpu.step();
+    }
+}
+
+///
+#[cfg(feature = "gui")]
+fn run_window(mut cpu: Cpu) {
+    use sdl2::{event::Event, keyboard::Keycode, pixels::PixelFormatEnum};
+
+    const SCALE: u32 = 4;
+
+    let sdl = sdl2::init().unwrap();
+    let video = sdl.video().unwrap();
+
+    let window = video
+        .window("Gameboy Color", 160 * SCALE, 144 * SCALE)
+        .position_centered()
+        .build()
+        .unwrap();
+
+    // present_vsync paces the loop to the monitor's refresh (~60fps)
+    let mut canvas = window.into_canvas().present_vsync().build().unwrap();
+
+    let texture_creator = canvas.texture_creator();
+    let mut texture = texture_creator
+        .create_texture_streaming(PixelFormatEnum::RGB24, 160, 144)
+        .unwrap();
+
+    let mut event_pump = sdl.event_pump().unwrap();
+
+    'running: loop {
+        // drain pending evnets; quit on window-close or Escape
+        for event in event_pump.poll_iter() {
+            match event {
+                Event::Quit { .. }
+                | Event::KeyDown {
+                    keycode: Some(Keycode::Escape),
+                    ..
+                } => break 'running,
+                _ => {}
+            }
+        }
+        // advance one frame
+        run_one_frame(&mut cpu);
+
+        // copy framebuffer -> texture (part 3 fills this in)
+        texture
+            .with_lock(None, |buf: &mut [u8], pitch: usize| {})
+            .unwrap();
+
+        // draw the texture to the window, scaled to fill
+        canvas.clear();
+        canvas.copy(&texture, None, None).unwrap();
+        canvas.present();
+    }
+}
+
+fn main() {
+    let mut cpu = Cpu::new();
+    setup_demo(&mut cpu);
+
+    #[cfg(feature = "gui")]
+    run_window(cpu);
+
+    #[cfg(not(feature = "gui"))]
+    {
+        run_one_frame(&mut cpu);
+        print_frame_ascii(&cpu);
+    }
+}
+
+#[cfg(not(feature = "gui"))]
+fn print_frame_ascii(cpu: &Cpu) {
     const SHADES: [char; 4] = [' ', '.', '+', '#']; // 0 =lightest .. 3 =darkest
 
     for y in (0..144).step_by(2) {
         let mut line = String::new();
         for x in (0..160).step_by(2) {
-            let shade = cpu.framebuffer[y * 160 + x];
-            line.push(SHADES[shade as usize]);
+            let (tr, tg, tb) = shade_to_rgb(cpu.framebuffer[y * 160 + x]);
+            let (br, bg, bb) = shade_to_rgb(cpu.framebuffer[(y + 1) * 160 + x]);
+            line.push_str(&format!(
+                "\x1b[38;2;{tr};{tg};{tb}m\x1b[48;2;{br};{bg};{bb}m\u{2580}",
+            ));
         }
+        line.push_str("\x1b[0m"); // reset so the last color doesn't bleed into the shell
         println!("{line}");
+    }
+}
+
+/// Map a 2-bit shade (0=lightest, 3=darkest) to a 0x00RRGGBB pixel
+fn shade_to_rgb(shade: u8) -> (u8, u8, u8) {
+    match shade {
+        // 0 => 0xFF_FF_FF, // white
+        0 => (224, 248, 208), //lightest
+        // 1 => 0xAA_AA_AA, // light gray
+        1 => (136, 192, 112), // mid-light green
+        // 2 => 0x55_55_55, // dark gray
+        2 => (52, 104, 86), // mid-dark green
+        // _ => 0x00_00_00, // black
+        _ => (8, 24, 32), // darkest
     }
 }
 

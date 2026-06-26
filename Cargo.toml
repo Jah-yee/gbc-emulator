@@ -4,3 +4,10 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+# SDL2 is the display/input/audio frontend. It's optional and only pulled in
+# by the `gui` feature, so `cargo test`/`cargo build` keep the core dep-free.
+sdl2 = { version = "0.38", optional = true }
+
+[features]
+# Enable the windowed frontend: `cargo run --features gui`
+gui = ["dep:sdl2"]
