@@ -96,7 +96,10 @@ fn run_window(mut cpu: Cpu) {
 
 fn main() {
     let mut cpu = Cpu::new();
-    setup_demo(&mut cpu);
+    // setup_demo(&mut cpu);
+    let path = std::env::args().nth(1).expect("usage: gbc <rom.gb>");
+    let rom = std::fs::read(&path).expect("failed to read ROM");
+    cpu.memory.load_rom(&rom);
 
     #[cfg(feature = "gui")]
     run_window(cpu);
