@@ -972,6 +972,22 @@ impl Cpu {
                 self.cycles += 8;
             }
 
+            // INC (HL) — increment the byte in memory at HL (Z/N/H flags, C unaffected)
+            0x34 => {
+                let value = self.read_operand(6); // (HL)
+                let result = self.alu_inc(value);
+                self.write_operand(6, result);
+                self.cycles += 12;
+            }
+
+            // DEC (HL) — decrement the byte in memory at HL (Z/N/H flags, C unaffected)
+            0x35 => {
+                let value = self.read_operand(6); // (HL)
+                let result = self.alu_dec(value);
+                self.write_operand(6, result);
+                self.cycles += 12;
+            }
+
             // LD (HL), d8 — store immediate byte into memory at HL
             0x36 => {
                 let n = self.fetch_byte();
