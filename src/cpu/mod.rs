@@ -916,6 +916,62 @@ impl Cpu {
                 self.cycles += 16;
             }
 
+            // ADD A, d8 — A = A + n
+            0xC6 => {
+                let n = self.fetch_byte();
+                self.alu_add(n);
+                self.cycles += 8;
+            }
+
+            // ADC A, d8 — A = A + n + carry
+            0xCE => {
+                let n = self.fetch_byte();
+                self.alu_adc(n);
+                self.cycles += 8;
+            }
+
+            // SUB d8 — A = A - n
+            0xD6 => {
+                let n = self.fetch_byte();
+                self.alu_sub(n);
+                self.cycles += 8;
+            }
+
+            // SBC A, d8 — A = A - n - carry
+            0xDE => {
+                let n = self.fetch_byte();
+                self.alu_sbc(n);
+                self.cycles += 8;
+            }
+
+            // AND d8 — A = A & n
+            0xE6 => {
+                let n = self.fetch_byte();
+                self.alu_and(n);
+                self.cycles += 8;
+            }
+
+            // XOR d8 — A = A ^ n
+            0xEE => {
+                let n = self.fetch_byte();
+                self.alu_xor(n);
+                self.cycles += 8;
+            }
+
+            // OR d8 — A = A | n
+            0xF6 => {
+                let n = self.fetch_byte();
+                self.alu_or(n);
+                self.cycles += 8;
+            }
+
+            // CP d8 — compare A with n (sets flags from A - n, result discarded)
+            0xFE => {
+                let n = self.fetch_byte();
+                self.alu_cp(n);
+                self.cycles += 8;
+            }
+
             //...so I need to implement all 256 opcodes?
             _ => panic!(
                 "Unimplemented opcode: 0x{:02X} at PC: 0x{:04X}",
