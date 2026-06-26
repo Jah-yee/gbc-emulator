@@ -972,6 +972,13 @@ impl Cpu {
                 self.cycles += 8;
             }
 
+            // LD (HL), d8 — store immediate byte into memory at HL
+            0x36 => {
+                let n = self.fetch_byte();
+                self.write_operand(6, n); // idx 6 = (HL)
+                self.cycles += 12;
+            }
+
             // SCF — set carry flag (C=1, N=0, H=0; Z unchanged)
             0x37 => {
                 self.registers.set_flag_subtract(false);
