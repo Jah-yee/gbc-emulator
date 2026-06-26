@@ -74,7 +74,17 @@ fn run_window(mut cpu: Cpu) {
 
         // copy framebuffer -> texture (part 3 fills this in)
         texture
-            .with_lock(None, |buf: &mut [u8], pitch: usize| {})
+            .with_lock(None, |buf: &mut [u8], pitch: usize| {
+                for y in 0..144 {
+                    for x in 0..160 {
+                        let (r, g, b) = shade_to_rgb(cpu.framebuffer[y * 160 + x]);
+                        let offset = y * pitch + x * 3;
+                        buf[offset] = r;
+                        buf[offset + 1] = g;
+                        buf[offset + 2] = b;
+                    }
+                }
+            })
             .unwrap();
 
         // draw the texture to the window, scaled to fill
