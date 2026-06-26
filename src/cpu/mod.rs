@@ -972,6 +972,60 @@ impl Cpu {
                 self.cycles += 8;
             }
 
+            // SCF — set carry flag (C=1, N=0, H=0; Z unchanged)
+            0x37 => {
+                self.registers.set_flag_subtract(false);
+                self.registers.set_flag_half_carry(false);
+                self.registers.set_flag_carry(true);
+                self.cycles += 4;
+            }
+
+            // CCF — complement carry flag (C=!C, N=0, H=0; Z unchanged)
+            0x3F => {
+                let c = self.registers.flag_carry();
+                self.registers.set_flag_subtract(false);
+                self.registers.set_flag_half_carry(false);
+                self.registers.set_flag_carry(!c);
+                self.cycles += 4;
+            }
+
+            // CPL — complement A (A = ~A; N=1, H=1; Z and C unchanged)
+            0x2F => {
+                self.registers.a = !self.registers.a;
+                self.registers.set_flag_subtract(true);
+                self.registers.set_flag_half_carry(true);
+                self.cycles += 4;
+            }
+
+            // DAA — decimal adjust A to valid BCD after an add/sub, using N/H/C flags.
+            // After addition (N=0): add 0x06 if a low-nibble carry happened, 0x60 if a high
+            // one did. After subtraction (N=1): subtract the same. Sets Z, clears H, sets C.
+            0x27 => {
+                let mut a = self.registers.a;
+                let mut carry = self.registers.flag_carry();
+                if !self.registers.flag_subtract() {
+                    if carry || a > 0x99 {
+                        a = a.wrapping_add(0x60);
+                        carry = true;
+                    }
+                    if self.registers.flag_half_carry() || (a & 0x0F) > 0x09 {
+                        a = a.wrapping_add(0x06);
+                    }
+                } else {
+                    if carry {
+                        a = a.wrapping_sub(0x60);
+                    }
+                    if self.registers.flag_half_carry() {
+                        a = a.wrapping_sub(0x06);
+                    }
+                }
+                self.registers.a = a;
+                self.registers.set_flag_zero(a == 0);
+                self.registers.set_flag_half_carry(false);
+                self.registers.set_flag_carry(carry);
+                self.cycles += 4;
+            }
+
             //...so I need to implement all 256 opcodes?
             _ => panic!(
                 "Unimplemented opcode: 0x{:02X} at PC: 0x{:04X}",
