@@ -69,6 +69,11 @@ fn run_window(mut cpu: Cpu) {
                     keycode: Some(Keycode::Escape),
                     ..
                 } => break 'running,
+                // Press D to dump CPU + hardware state to the terminal.
+                Event::KeyDown {
+                    keycode: Some(Keycode::D),
+                    ..
+                } => eprintln!("{}", cpu.debug_state()),
                 _ => {}
             }
         }
