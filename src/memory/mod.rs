@@ -101,7 +101,8 @@ impl Memory {
             // External (cartridge) RAM - only accessible while enabled.
             0xA000..=0xBFFF => {
                 if self.ram_enabled {
-                    self.external_ram[self.ram_bank * 0x2000 + (address - 0xA000) as usize]
+                    let off = self.ram_bank * 0x2000 + (address - 0xA000) as usize;
+                    self.external_ram.get(off).copied().unwrap_or(0xFF)
                 } else {
                     0xFF
                 }
@@ -183,6 +184,20 @@ impl Memory {
                     _ => {}
                 },
 
+                // MBC5.
+                0x19..=0x1E => match address {
+                    0x0000..=0x1FFF => self.ram_enabled = value & 0x0F == 0x0A,
+                    // ROM bank low 8 bits. No bank-0 quirk - bank 0 is valid here.
+                    0x2000..=0x2FFF => self.rom_bank = (self.rom_bank & 0x100) | value as usize,
+                    // ROM bank bit 8 (the 9th bit, for ROMs > 1MB).
+                    0x3000..=0x3FFF => {
+                        self.rom_bank = (self.rom_bank & 0xFF) | ((value as usize & 1) << 8)
+                    }
+                    // RAM bank (low 4 bits).
+                    0x4000..=0x5FFF => self.ram_bank = (value & 0x0F) as usize,
+                    _ => {}
+                },
+
                 _ => {} // other MBCs not supported yet
             },
 
@@ -192,7 +207,10 @@ impl Memory {
             // External RAM
             0xA000..=0xBFFF => {
                 if self.ram_enabled {
-                    self.external_ram[self.ram_bank * 0x2000 + (address - 0xA000) as usize] = value;
+                    let off = self.ram_bank * 0x2000 + (address - 0xA000) as usize;
+                    if let Some(slot) = self.external_ram.get_mut(off) {
+                        *slot = value;
+                    }
                 }
             }
 
@@ -470,6 +488,24 @@ mod tests {
         assert_eq!(memory.read_byte(0xA000), 0x11);
         memory.write_byte(0x4000, 0x01);
         assert_eq!(memory.read_byte(0xA000), 0x22);
+    }
+
+    #[test]
+    fn test_mbc5_rom_bank_no_zero_quirk() {
+        let mut memory = Memory::new();
+        let mut rom = vec![0u8; 0x4000 * 3];
+        rom[0x0147] = 0x1B; // MBC5 + RAM + battery (Pokemon Yellow's type)
+        rom[0x0000] = 0x10; // bank 0, first byte
+        rom[0x4000] = 0xAA; // bank 1
+        rom[0x8000] = 0xBB; // bank 2
+        memory.load_rom(&rom);
+
+        memory.write_byte(0x2000, 0x02); // select bank 2 (low byte)
+        assert_eq!(memory.read_byte(0x4000), 0xBB);
+
+        // MBC5 has NO bank-0->1 quirk: bank 0 maps to bank 0.
+        memory.write_byte(0x2000, 0x00);
+        assert_eq!(memory.read_byte(0x4000), 0x10);
     }
 
     #[test]
