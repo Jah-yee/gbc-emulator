@@ -455,9 +455,16 @@ impl Cpu {
             if self.registers.flag_carry() { 'C' } else { '-' },
         );
 
+        // Occupancy: how much VRAM and framebuffer is non-zero (quick "is anything there?").
+        let vram_nz = (0x8000u16..0xA000)
+            .filter(|&a| self.memory.read_byte(a) != 0)
+            .count();
+        let fb_nz = self.framebuffer.iter().filter(|&&p| p != 0).count();
+
         format!(
             "A:{:02X} F:{:02X}({}) B:{:02X} C:{:02X} D:{:02X} E:{:02X} H:{:02X} L:{:02X} \
-             SP:{:04X} PC:{:04X} | LCDC:{:02X} STAT:{:02X} LY:{:02X} IE:{:02X} IF:{:02X} IME:{}",
+             SP:{:04X} PC:{:04X} | LCDC:{:02X} STAT:{:02X} LY:{:02X} IE:{:02X} IF:{:02X} IME:{} \
+             | SCY:{:02X} SCX:{:02X} BGP:{:02X} WY:{:02X} WX:{:02X} | vram_nz:{} fb_nz:{}",
             self.registers.a,
             self.registers.f,
             flags,
@@ -475,6 +482,13 @@ impl Cpu {
             self.memory.read_byte(0xFFFF),
             self.memory.read_byte(0xFF0F),
             self.interrupts_enabled,
+            self.memory.read_byte(0xFF42),
+            self.memory.read_byte(0xFF43),
+            self.memory.read_byte(0xFF47),
+            self.memory.read_byte(0xFF4A),
+            self.memory.read_byte(0xFF4B),
+            vram_nz,
+            fb_nz,
         )
     }
 
