@@ -27,6 +27,9 @@ pub struct Memory {
 
     // Interrupt Enable Register
     ie_register: u8,
+
+    // Captured serial output (test ROMs print Pass/Fail here via the link port).
+    pub serial: String,
 }
 
 impl Memory {
@@ -41,6 +44,7 @@ impl Memory {
             io_registers: [0; 0x80],
             hram: [0; 0x7F],
             ie_register: 0,
+            serial: String::new(),
         };
         // Post-boot register defaults (values the boot ROM leaves behind).
         memory.io_registers[0x40] = 0x91; // LCDC: LCD on, BG on, 0x8000 tile data
@@ -111,7 +115,20 @@ impl Memory {
             0xFEA0..=0xFEFF => {}
 
             // I/O Registers
-            0xFF00..=0xFF7F => self.io_registers[(address - 0xFF00) as usize] = value,
+            0xFF00..=0xFF7F => {
+                self.io_registers[(address - 0xFF00) as usize] = value;
+
+                // Serial: writing SC (0xFF02) with bit 7 set "sends" the byte sitting
+                // in SB (0xFF01). Capture it so test ROMs (e.g. Blargg's) can report
+                // Pass/Fail through the link port. Print live and keep a buffer.
+                if address == 0xFF02 && value & 0x80 != 0 {
+                    let byte = self.io_registers[0x01]; // SB = 0xFF01
+                    self.serial.push(byte as char);
+                    print!("{}", byte as char);
+                    use std::io::Write;
+                    let _ = std::io::stdout().flush();
+                }
+            }
 
             // High RAM
             0xFF80..=0xFFFE => self.hram[(address - 0xFF80) as usize] = value,

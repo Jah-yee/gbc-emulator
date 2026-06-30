@@ -416,6 +416,41 @@ impl Cpu {
         self.memory.write_byte(0xFF0F, iflag | (1 << bit));
     }
 
+    /// A human-readable one-line snapshot of CPU + key hardware state.
+    /// Returns the string (caller decides whether to print/log/assert).
+    pub fn debug_state(&self) -> String {
+        // Decode F into letters: the flag's letter if set, '-' if clear.
+        let flags = format!(
+            "{}{}{}{}",
+            if self.registers.flag_zero() { 'Z' } else { '-' },
+            if self.registers.flag_subtract() { 'N' } else { '-' },
+            if self.registers.flag_half_carry() { 'H' } else { '-' },
+            if self.registers.flag_carry() { 'C' } else { '-' },
+        );
+
+        format!(
+            "A:{:02X} F:{:02X}({}) B:{:02X} C:{:02X} D:{:02X} E:{:02X} H:{:02X} L:{:02X} \
+             SP:{:04X} PC:{:04X} | LCDC:{:02X} STAT:{:02X} LY:{:02X} IE:{:02X} IF:{:02X} IME:{}",
+            self.registers.a,
+            self.registers.f,
+            flags,
+            self.registers.b,
+            self.registers.c,
+            self.registers.d,
+            self.registers.e,
+            self.registers.h,
+            self.registers.l,
+            self.sp,
+            self.pc,
+            self.memory.read_byte(0xFF40),
+            self.memory.read_byte(0xFF41),
+            self.memory.read_byte(0xFF44),
+            self.memory.read_byte(0xFFFF),
+            self.memory.read_byte(0xFF0F),
+            self.interrupts_enabled,
+        )
+    }
+
     /// Check for and dispatch a pending interrupt. Runs before each fetch.
     fn handle_interrupts(&mut self) {
         let ie = self.memory.read_byte(0xFFFF); // which interrupts are enabled
@@ -2425,5 +2460,16 @@ mod instruction_tests {
         // (bit0=0)
         cpu.render_scanline(0);
         assert_eq!(&cpu.framebuffer[0..8], &[0; 8]); // ...but BG-disable blanks it
+    }
+
+    #[test]
+    fn test_debug_state_reports_initial_state() {
+        let cpu = Cpu::new();
+        let s = cpu.debug_state();
+        // Fresh CPU starts at the cartridge entry point with the stack at the top.
+        assert!(s.contains("PC:0100"), "debug_state was: {s}");
+        assert!(s.contains("SP:FFFE"), "debug_state was: {s}");
+        // Post-boot LCDC default we seed in Memory::new.
+        assert!(s.contains("LCDC:91"), "debug_state was: {s}");
     }
 }
