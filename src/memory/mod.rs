@@ -12,7 +12,7 @@ pub struct Memory {
     vram: [u8; 0x2000],
 
     // External RAM (Cartridge RAM)
-    external_ram: [u8; 0x2000],
+    external_ram: [u8; 0x8000], // up to 4 x 8KB cartridge RAM banks
 
     // Work RAM
     wram: [u8; 0x2000],
@@ -43,8 +43,9 @@ pub struct Memory {
     buttons: u8,
 
     // Cartridge / MBC state.
-    cart_type: u8,     // header byte 0x0147 (0x00 = ROM only, 0x01-0x03 = MBC1, ...)
+    cart_type: u8,     // header byte 0x0147 (0x00 = ROM only, 0x01-0x03 = MBC1, 0x0F-0x13 = MBC3)
     ram_enabled: bool, // cartridge RAM gate (set via 0x0000-0x1FFF writes)
+    ram_bank: usize,   // which 8KB cartridge-RAM bank is mapped at 0xA000
 }
 
 impl Memory {
@@ -53,7 +54,7 @@ impl Memory {
             rom: Vec::new(),
             rom_bank: 1,
             vram: [0; 0x2000],
-            external_ram: [0; 0x2000],
+            external_ram: [0; 0x8000],
             wram: [0; 0x2000],
             oam: [0; 0xA0],
             io_registers: [0; 0x80],
@@ -66,6 +67,7 @@ impl Memory {
             buttons: 0,
             cart_type: 0,
             ram_enabled: false,
+            ram_bank: 0,
         };
         // Post-boot register defaults (values the boot ROM leaves behind). Games
         // like Tetris rely on these instead of setting them, so without them the
@@ -99,7 +101,7 @@ impl Memory {
             // External (cartridge) RAM - only accessible while enabled.
             0xA000..=0xBFFF => {
                 if self.ram_enabled {
-                    self.external_ram[(address - 0xA000) as usize]
+                    self.external_ram[self.ram_bank * 0x2000 + (address - 0xA000) as usize]
                 } else {
                     0xFF
                 }
@@ -144,25 +146,45 @@ impl Memory {
     pub fn write_byte(&mut self, address: u16, value: u8) {
         match address {
             // Writes to ROM space aren't stored - they're MBC control commands.
-            0x0000..=0x7FFF => {
-                if self.cart_type == 0x00 {
-                    return; // ROM only: no MBC, ignore
-                }
-                match address {
+            0x0000..=0x7FFF => match self.cart_type {
+                // ROM only: no MBC, ignore.
+                0x00 => {}
+
+                // MBC1.
+                0x01..=0x03 => match address {
                     // RAM enable: low nibble == 0xA enables cartridge RAM.
                     0x0000..=0x1FFF => self.ram_enabled = value & 0x0F == 0x0A,
-
-                    // ROM bank select (low 5 bits). A request for bank 0 maps to 1,
-                    // since bank 0 is already fixed at 0x0000-0x3FFF.
+                    // ROM bank (low 5 bits); a request for bank 0 maps to 1.
                     0x2000..=0x3FFF => {
                         let n = (value & 0x1F) as usize;
                         self.rom_bank = if n == 0 { 1 } else { n };
                     }
-
-                    // 0x4000-0x7FFF: RAM bank / upper ROM bits / mode -> chunk 2b
+                    // 0x4000-0x7FFF: upper ROM bits / RAM bank / mode (not yet).
                     _ => {}
-                }
-            }
+                },
+
+                // MBC3.
+                0x0F..=0x13 => match address {
+                    // RAM (and RTC) enable.
+                    0x0000..=0x1FFF => self.ram_enabled = value & 0x0F == 0x0A,
+                    // ROM bank: full 7 bits; bank 0 maps to 1.
+                    0x2000..=0x3FFF => {
+                        let n = (value & 0x7F) as usize;
+                        self.rom_bank = if n == 0 { 1 } else { n };
+                    }
+                    // 0x4000-0x5FFF: 0x00-0x03 selects a RAM bank; 0x08-0x0C selects
+                    // an RTC register (clock not implemented - we just ignore those).
+                    0x4000..=0x5FFF => {
+                        if value <= 0x03 {
+                            self.ram_bank = value as usize;
+                        }
+                    }
+                    // 0x6000-0x7FFF: latch clock data (RTC stub).
+                    _ => {}
+                },
+
+                _ => {} // other MBCs not supported yet
+            },
 
             // VRAM
             0x8000..=0x9FFF => self.vram[(address - 0x8000) as usize] = value,
@@ -170,7 +192,7 @@ impl Memory {
             // External RAM
             0xA000..=0xBFFF => {
                 if self.ram_enabled {
-                    self.external_ram[(address - 0xA000) as usize] = value;
+                    self.external_ram[self.ram_bank * 0x2000 + (address - 0xA000) as usize] = value;
                 }
             }
 
@@ -246,6 +268,8 @@ impl Memory {
         // Cartridge type lives in the header at 0x0147.
         self.cart_type = self.rom.get(0x0147).copied().unwrap_or(0);
         self.rom_bank = 1;
+        self.ram_bank = 0;
+        self.ram_enabled = false;
     }
 
     /// Set joypad press state from the frontend. Each is a low-nibble mask
@@ -401,6 +425,32 @@ mod tests {
         // Requesting bank 0 maps to bank 1 (the MBC1 quirk).
         memory.write_byte(0x2000, 0x00);
         assert_eq!(memory.read_byte(0x4000), 0xAA);
+    }
+
+    #[test]
+    fn test_mbc3_rom_and_ram_banks() {
+        let mut memory = Memory::new();
+        // ROM big enough for bank 0x40 (65 banks); mark bank 0x40's first byte.
+        let mut rom = vec![0u8; 0x4000 * 0x41];
+        rom[0x0147] = 0x13; // MBC3 + RAM + battery
+        rom[0x4000 * 0x40] = 0xCD; // bank 0x40, first byte
+        memory.load_rom(&rom);
+
+        // 7-bit ROM bank: 0x40 is reachable (MBC1's 5 bits couldn't).
+        memory.write_byte(0x2000, 0x40);
+        assert_eq!(memory.read_byte(0x4000), 0xCD);
+
+        // RAM bank switching: write distinct bytes to banks 0 and 1.
+        memory.write_byte(0x0000, 0x0A); // enable RAM
+        memory.write_byte(0x4000, 0x00); // RAM bank 0
+        memory.write_byte(0xA000, 0x11);
+        memory.write_byte(0x4000, 0x01); // RAM bank 1
+        memory.write_byte(0xA000, 0x22);
+
+        memory.write_byte(0x4000, 0x00);
+        assert_eq!(memory.read_byte(0xA000), 0x11);
+        memory.write_byte(0x4000, 0x01);
+        assert_eq!(memory.read_byte(0xA000), 0x22);
     }
 
     #[test]
