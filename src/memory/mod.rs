@@ -96,8 +96,14 @@ impl Memory {
             // VRAM
             0x8000..=0x9FFF => self.vram[(address - 0x8000) as usize],
 
-            // External RAM
-            0xA000..=0xBFFF => self.external_ram[(address - 0xA000) as usize],
+            // External (cartridge) RAM - only accessible while enabled.
+            0xA000..=0xBFFF => {
+                if self.ram_enabled {
+                    self.external_ram[(address - 0xA000) as usize]
+                } else {
+                    0xFF
+                }
+            }
 
             // Work RAM
             0xC000..=0xDFFF => self.wram[(address - 0xC000) as usize],
@@ -162,7 +168,11 @@ impl Memory {
             0x8000..=0x9FFF => self.vram[(address - 0x8000) as usize] = value,
 
             // External RAM
-            0xA000..=0xBFFF => self.external_ram[(address - 0xA000) as usize] = value,
+            0xA000..=0xBFFF => {
+                if self.ram_enabled {
+                    self.external_ram[(address - 0xA000) as usize] = value;
+                }
+            }
 
             // Work RAM
             0xC000..=0xDFFF => self.wram[(address - 0xC000) as usize] = value,
@@ -391,6 +401,27 @@ mod tests {
         // Requesting bank 0 maps to bank 1 (the MBC1 quirk).
         memory.write_byte(0x2000, 0x00);
         assert_eq!(memory.read_byte(0x4000), 0xAA);
+    }
+
+    #[test]
+    fn test_cartridge_ram_enable_gate() {
+        let mut memory = Memory::new();
+        let mut rom = vec![0u8; 0x8000];
+        rom[0x0147] = 0x03; // MBC1 + RAM + battery
+        memory.load_rom(&rom);
+
+        // Disabled by default: writes dropped, reads return 0xFF.
+        memory.write_byte(0xA000, 0x42);
+        assert_eq!(memory.read_byte(0xA000), 0xFF);
+
+        // Enable, then RAM works.
+        memory.write_byte(0x0000, 0x0A);
+        memory.write_byte(0xA000, 0x42);
+        assert_eq!(memory.read_byte(0xA000), 0x42);
+
+        // Disable again: data is retained but gated off (reads 0xFF).
+        memory.write_byte(0x0000, 0x00);
+        assert_eq!(memory.read_byte(0xA000), 0xFF);
     }
 
     #[test]
