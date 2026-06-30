@@ -3,6 +3,9 @@
 mod cpu;
 mod memory;
 
+#[cfg(test)]
+mod blargg_tests;
+
 use cpu::Cpu;
 
 /// Paint a teset pattern into VRAM, then load a HALT so the CPU idles
