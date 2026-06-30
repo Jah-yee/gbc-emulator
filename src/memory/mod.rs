@@ -51,8 +51,13 @@ impl Memory {
             serial: String::new(),
             trace: std::env::var("GBC_TRACE").is_ok(),
         };
-        // Post-boot register defaults (values the boot ROM leaves behind).
+        // Post-boot register defaults (values the boot ROM leaves behind). Games
+        // like Tetris rely on these instead of setting them, so without them the
+        // palette is 0 and everything renders as the lightest shade (blank).
         memory.io_registers[0x40] = 0x91; // LCDC: LCD on, BG on, 0x8000 tile data
+        memory.io_registers[0x47] = 0xFC; // BGP: background palette
+        memory.io_registers[0x48] = 0xFF; // OBP0: sprite palette 0
+        memory.io_registers[0x49] = 0xFF; // OBP1: sprite palette 1
         memory
     }
 
