@@ -16,15 +16,18 @@ pub struct Registers {
 
 impl Registers {
     pub fn new() -> Self {
+        // DMG post-boot register state (what the boot ROM leaves behind). We skip
+        // the boot ROM and start at 0x0100, so we must seed these ourselves or
+        // games/tests diverge from the very first instruction.
         Self {
-            a: 0,
-            f: 0,
-            b: 0,
-            c: 0,
-            d: 0,
-            e: 0,
-            h: 0,
-            l: 0,
+            a: 0x01,
+            f: 0xB0, // Z=1, N=0, H=1, C=1
+            b: 0x00,
+            c: 0x13,
+            d: 0x00,
+            e: 0xD8,
+            h: 0x01,
+            l: 0x4D,
         }
     }
     // Helper methods to work with paired registers
@@ -87,7 +90,7 @@ impl Registers {
         if set {
             self.f |= 0b0100_0000;
         } else {
-            self.f &= 0b1101_1111;
+            self.f &= 0b1011_1111; // clear bit 6 (N), not bit 5
         }
     }
 
@@ -193,6 +196,7 @@ pub struct Cpu {
     pub tima_counter: u32, // accumulates cycles for TIMA
     pub ppu_dots: u32,     // accumulates cycles within the current scanline
     pub framebuffer: [u8; 160 * 144], // one color id (0-3) per pixel
+    pub trace: bool,       // Gameboy Doctor trace mode (GBC_TRACE env var)
 }
 
 impl Cpu {
@@ -209,6 +213,7 @@ impl Cpu {
             tima_counter: 0,
             ppu_dots: 0,
             framebuffer: [0; 160 * 144],
+            trace: std::env::var("GBC_TRACE").is_ok(),
         }
     }
 
@@ -223,6 +228,28 @@ impl Cpu {
             self.step_timer(4);
             self.step_ppu(4);
             return;
+        }
+
+        // Gameboy Doctor trace: log state BEFORE the instruction, not while halted.
+        if self.trace {
+            println!(
+                "A:{:02X} F:{:02X} B:{:02X} C:{:02X} D:{:02X} E:{:02X} H:{:02X} L:{:02X} \
+                 SP:{:04X} PC:{:04X} PCMEM:{:02X},{:02X},{:02X},{:02X}",
+                self.registers.a,
+                self.registers.f,
+                self.registers.b,
+                self.registers.c,
+                self.registers.d,
+                self.registers.e,
+                self.registers.h,
+                self.registers.l,
+                self.sp,
+                self.pc,
+                self.memory.read_byte(self.pc),
+                self.memory.read_byte(self.pc.wrapping_add(1)),
+                self.memory.read_byte(self.pc.wrapping_add(2)),
+                self.memory.read_byte(self.pc.wrapping_add(3)),
+            );
         }
 
         let before = self.cycles;
@@ -1568,8 +1595,9 @@ mod tests {
     #[test]
     fn test_flag_operations() {
         let mut registers = Registers::new();
+        registers.f = 0; // clean slate (post-boot default is 0xB0); this test checks setters
 
-        // All flags should start clear
+        // All flags should now be clear
         assert_eq!(registers.f, 0);
         assert!(!registers.flag_zero());
         assert!(!registers.flag_subtract());
@@ -1791,6 +1819,7 @@ mod instruction_tests {
         // INC wraps 0xFFFF -> 0x0000 AND sets NO flags (Z must stay clear)
         let mut cpu = setup_cpu(vec![0x23]); // INC HL
         cpu.registers.set_hl(0xFFFF);
+        cpu.registers.set_flag_zero(false); // clear Z first so we can prove INC rr never sets it
         cpu.step();
         assert_eq!(cpu.registers.hl(), 0x0000);
         assert!(!cpu.registers.flag_zero()); // result is 0 but Z is NOT set

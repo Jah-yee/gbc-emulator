@@ -30,6 +30,10 @@ pub struct Memory {
 
     // Captured serial output (test ROMs print Pass/Fail here via the link port).
     pub serial: String,
+
+    // Gameboy Doctor trace mode (GBC_TRACE env var): stub LY reads to 0x90 and
+    // suppress live serial printing so the trace log stays clean.
+    pub trace: bool,
 }
 
 impl Memory {
@@ -45,6 +49,7 @@ impl Memory {
             hram: [0; 0x7F],
             ie_register: 0,
             serial: String::new(),
+            trace: std::env::var("GBC_TRACE").is_ok(),
         };
         // Post-boot register defaults (values the boot ROM leaves behind).
         memory.io_registers[0x40] = 0x91; // LCDC: LCD on, BG on, 0x8000 tile data
@@ -52,6 +57,11 @@ impl Memory {
     }
 
     pub fn read_byte(&self, address: u16) -> u8 {
+        // Gameboy Doctor: its reference logs were generated with LY hardcoded to
+        // 0x90, so stub it here while tracing to avoid spurious PPU-timing diffs.
+        if self.trace && address == 0xFF44 {
+            return 0x90;
+        }
         match address {
             // ROM Bank 0
             0x0000..=0x3FFF => self.rom_bank_0[address as usize],
@@ -124,9 +134,11 @@ impl Memory {
                 if address == 0xFF02 && value & 0x80 != 0 {
                     let byte = self.io_registers[0x01]; // SB = 0xFF01
                     self.serial.push(byte as char);
-                    print!("{}", byte as char);
-                    use std::io::Write;
-                    let _ = std::io::stdout().flush();
+                    if !self.trace {
+                        print!("{}", byte as char);
+                        use std::io::Write;
+                        let _ = std::io::stdout().flush();
+                    }
                 }
             }
 

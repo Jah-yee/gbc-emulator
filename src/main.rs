@@ -109,8 +109,24 @@ fn main() {
 
     #[cfg(not(feature = "gui"))]
     {
-        run_one_frame(&mut cpu);
-        print_frame_ascii(&cpu);
+        // Headless: run until the ROM reports over serial (test ROMs), or a cap.
+        // With GBC_TRACE=1 this emits a Gameboy Doctor log on stdout; the serial
+        // summary goes to stderr so stdout stays a clean trace.
+        let mut last = 0;
+        while cpu.cycles < 250_000_000 {
+            cpu.step();
+            let len = cpu.memory.serial.len();
+            if len != last {
+                last = len;
+                if cpu.memory.serial.contains("Passed") || cpu.memory.serial.contains("Failed") {
+                    break;
+                }
+            }
+        }
+        eprintln!("[serial] {}", cpu.memory.serial);
+        if !cpu.trace {
+            print_frame_ascii(&cpu);
+        }
     }
 }
 
