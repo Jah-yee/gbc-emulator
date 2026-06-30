@@ -34,6 +34,29 @@ fn run_one_frame(cpu: &mut Cpu) {
     }
 }
 
+/// Map a key to a joypad button and set/clear its bit. Arrows = D-pad;
+/// Z=A, X=B, Backspace=Select, Return=Start.
+#[cfg(feature = "gui")]
+fn set_key(k: sdl2::keyboard::Keycode, pressed: bool, dpad: &mut u8, buttons: &mut u8) {
+    use sdl2::keyboard::Keycode;
+    let (mask, target): (u8, &mut u8) = match k {
+        Keycode::Right => (0b0001, dpad),
+        Keycode::Left => (0b0010, dpad),
+        Keycode::Up => (0b0100, dpad),
+        Keycode::Down => (0b1000, dpad),
+        Keycode::Z => (0b0001, buttons),         // A
+        Keycode::X => (0b0010, buttons),         // B
+        Keycode::Backspace => (0b0100, buttons), // Select
+        Keycode::Return => (0b1000, buttons),    // Start
+        _ => return,
+    };
+    if pressed {
+        *target |= mask;
+    } else {
+        *target &= !mask;
+    }
+}
+
 ///
 #[cfg(feature = "gui")]
 fn run_window(mut cpu: Cpu) {
@@ -60,8 +83,12 @@ fn run_window(mut cpu: Cpu) {
 
     let mut event_pump = sdl.event_pump().unwrap();
 
+    // Joypad press masks (low nibble each, 1 = pressed), updated on key events.
+    let mut dpad = 0u8;
+    let mut buttons = 0u8;
+
     'running: loop {
-        // drain pending evnets; quit on window-close or Escape
+        // drain pending events; quit on window-close or Escape
         for event in event_pump.poll_iter() {
             match event {
                 Event::Quit { .. }
@@ -74,9 +101,17 @@ fn run_window(mut cpu: Cpu) {
                     keycode: Some(Keycode::D),
                     ..
                 } => eprintln!("{}", cpu.debug_state()),
+                Event::KeyDown {
+                    keycode: Some(k), ..
+                } => set_key(k, true, &mut dpad, &mut buttons),
+                Event::KeyUp {
+                    keycode: Some(k), ..
+                } => set_key(k, false, &mut dpad, &mut buttons),
                 _ => {}
             }
         }
+        cpu.memory.set_joypad(dpad, buttons);
+
         // advance one frame
         run_one_frame(&mut cpu);
 

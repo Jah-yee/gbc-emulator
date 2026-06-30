@@ -34,6 +34,12 @@ pub struct Memory {
     // Gameboy Doctor trace mode (GBC_TRACE env var): stub LY reads to 0x90 and
     // suppress live serial printing so the trace log stays clean.
     pub trace: bool,
+
+    // Joypad (0xFF00). `select` holds the group bits 4-5 the game wrote (0=selected).
+    // `dpad`/`buttons` are low-nibble press masks (1=pressed) set by the frontend.
+    joypad_select: u8,
+    dpad: u8,
+    buttons: u8,
 }
 
 impl Memory {
@@ -50,6 +56,9 @@ impl Memory {
             ie_register: 0,
             serial: String::new(),
             trace: std::env::var("GBC_TRACE").is_ok(),
+            joypad_select: 0x30, // nothing selected
+            dpad: 0,
+            buttons: 0,
         };
         // Post-boot register defaults (values the boot ROM leaves behind). Games
         // like Tetris rely on these instead of setting them, so without them the
@@ -92,6 +101,19 @@ impl Memory {
             // Not usable
             0xFEA0..=0xFEFF => 0xFF,
 
+            // Joypad: bits 7-6 read 1, bits 5-4 = selected group, bits 3-0 = button
+            // states for the selected group(s), active-low (0 = pressed).
+            0xFF00 => {
+                let mut low = 0x0F;
+                if self.joypad_select & 0x10 == 0 {
+                    low &= !self.dpad & 0x0F; // directions selected
+                }
+                if self.joypad_select & 0x20 == 0 {
+                    low &= !self.buttons & 0x0F; // action buttons selected
+                }
+                0xC0 | self.joypad_select | low
+            }
+
             // I/O Registers
             0xFF00..=0xFF7F => self.io_registers[(address - 0xFF00) as usize],
 
@@ -128,6 +150,9 @@ impl Memory {
 
             // Not usable
             0xFEA0..=0xFEFF => {}
+
+            // Joypad: the game only writes the group-select bits 4-5.
+            0xFF00 => self.joypad_select = value & 0x30,
 
             // I/O Registers
             0xFF00..=0xFF7F => {
@@ -177,6 +202,14 @@ impl Memory {
             let bank_n_size = std::cmp::min(rom.len() - 0x4000, 0x4000);
             self.rom_bank_n[..bank_n_size].copy_from_slice(&rom[0x4000..0x4000 + bank_n_size]);
         }
+    }
+
+    /// Set joypad press state from the frontend. Each is a low-nibble mask
+    /// (1 = pressed): dpad = Right/Left/Up/Down (bits 0-3),
+    /// buttons = A/B/Select/Start (bits 0-3).
+    pub fn set_joypad(&mut self, dpad: u8, buttons: u8) {
+        self.dpad = dpad & 0x0F;
+        self.buttons = buttons & 0x0F;
     }
 }
 
@@ -280,6 +313,28 @@ mod tests {
 
         // ROM should still contain original value
         assert_eq!(memory.read_byte(0x0000), 0xAA);
+    }
+
+    #[test]
+    fn test_joypad_nothing_pressed_reads_high() {
+        let mut memory = Memory::new();
+        memory.write_byte(0xFF00, 0x20); // select directions (bit4=0)
+        // Nothing pressed -> low nibble all 1s.
+        assert_eq!(memory.read_byte(0xFF00) & 0x0F, 0x0F);
+    }
+
+    #[test]
+    fn test_joypad_press_only_shows_in_selected_group() {
+        let mut memory = Memory::new();
+        memory.set_joypad(0b0001, 0b0000); // Right pressed (dpad bit 0)
+
+        // Select directions: Right reads as 0 (pressed, active-low).
+        memory.write_byte(0xFF00, 0x20); // bit4=0 dir selected, bit5=1 actions not
+        assert_eq!(memory.read_byte(0xFF00) & 0x01, 0x00);
+
+        // Select action buttons instead: the direction press must NOT appear.
+        memory.write_byte(0xFF00, 0x10); // bit5=0 actions selected, bit4=1 dir not
+        assert_eq!(memory.read_byte(0xFF00) & 0x0F, 0x0F);
     }
 }
 
