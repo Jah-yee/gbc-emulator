@@ -154,6 +154,18 @@ impl Memory {
             // Joypad: the game only writes the group-select bits 4-5.
             0xFF00 => self.joypad_select = value & 0x30,
 
+            // OAM DMA: writing the source high-byte here copies 160 bytes
+            // (source = value << 8) into OAM at 0xFE00. Games do this each frame.
+            // Done instantly here (real hardware takes ~160 cycles).
+            0xFF46 => {
+                let src = (value as u16) << 8;
+                for i in 0..0xA0u16 {
+                    let byte = self.read_byte(src + i);
+                    self.write_byte(0xFE00 + i, byte);
+                }
+                self.io_registers[0x46] = value; // keep the register readable
+            }
+
             // I/O Registers
             0xFF00..=0xFF7F => {
                 self.io_registers[(address - 0xFF00) as usize] = value;
@@ -335,6 +347,19 @@ mod tests {
         // Select action buttons instead: the direction press must NOT appear.
         memory.write_byte(0xFF00, 0x10); // bit5=0 actions selected, bit4=1 dir not
         assert_eq!(memory.read_byte(0xFF00) & 0x0F, 0x0F);
+    }
+
+    #[test]
+    fn test_oam_dma_copies_to_oam() {
+        let mut memory = Memory::new();
+        // Stage a sprite table in WRAM at 0xC000.
+        memory.write_byte(0xC000, 0x42);
+        memory.write_byte(0xC09F, 0x99); // last of the 160 bytes
+
+        memory.write_byte(0xFF46, 0xC0); // trigger DMA from 0xC000
+
+        assert_eq!(memory.read_byte(0xFE00), 0x42); // first OAM byte
+        assert_eq!(memory.read_byte(0xFE9F), 0x99); // last OAM byte
     }
 }
 
