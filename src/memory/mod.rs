@@ -1,11 +1,12 @@
 // src/memory/mod.rs
 
 pub struct Memory {
-    // ROM Bank 0 (first 16KB of cartridge)
-    rom_bank_0: [u8; 0x4000],
+    // The entire cartridge ROM (all banks, however big).
+    rom: Vec<u8>,
 
-    // ROM BANK N (switchable banks)
-    rom_bank_n: [u8; 0x4000],
+    // Which 16KB ROM bank is currently mapped at 0x4000-0x7FFF. Boots at 1
+    // (bank 0 is always fixed at 0x0000-0x3FFF). The MBC changes this.
+    rom_bank: usize,
 
     // Video RAM
     vram: [u8; 0x2000],
@@ -40,13 +41,17 @@ pub struct Memory {
     joypad_select: u8,
     dpad: u8,
     buttons: u8,
+
+    // Cartridge / MBC state.
+    cart_type: u8,     // header byte 0x0147 (0x00 = ROM only, 0x01-0x03 = MBC1, ...)
+    ram_enabled: bool, // cartridge RAM gate (set via 0x0000-0x1FFF writes)
 }
 
 impl Memory {
     pub fn new() -> Self {
         let mut memory = Self {
-            rom_bank_0: [0; 0x4000],
-            rom_bank_n: [0; 0x4000],
+            rom: Vec::new(),
+            rom_bank: 1,
             vram: [0; 0x2000],
             external_ram: [0; 0x2000],
             wram: [0; 0x2000],
@@ -59,6 +64,8 @@ impl Memory {
             joypad_select: 0x30, // nothing selected
             dpad: 0,
             buttons: 0,
+            cart_type: 0,
+            ram_enabled: false,
         };
         // Post-boot register defaults (values the boot ROM leaves behind). Games
         // like Tetris rely on these instead of setting them, so without them the
@@ -77,11 +84,14 @@ impl Memory {
             return 0x90;
         }
         match address {
-            // ROM Bank 0
-            0x0000..=0x3FFF => self.rom_bank_0[address as usize],
+            // ROM Bank 0 (fixed: the first 16KB of the cartridge)
+            0x0000..=0x3FFF => self.rom.get(address as usize).copied().unwrap_or(0xFF),
 
-            // ROM Bank N
-            0x4000..=0x7FFF => self.rom_bank_n[(address - 0x4000) as usize],
+            // ROM Bank N (switchable): index into the selected 16KB bank.
+            0x4000..=0x7FFF => {
+                let offset = self.rom_bank * 0x4000 + (address as usize - 0x4000);
+                self.rom.get(offset).copied().unwrap_or(0xFF)
+            }
 
             // VRAM
             0x8000..=0x9FFF => self.vram[(address - 0x8000) as usize],
@@ -127,10 +137,25 @@ impl Memory {
 
     pub fn write_byte(&mut self, address: u16, value: u8) {
         match address {
-            // ROM is read-only (writes may trigger bank switching)
+            // Writes to ROM space aren't stored - they're MBC control commands.
             0x0000..=0x7FFF => {
-                // For now, ignore writes to ROM
-                // Later we'll implement Memory Bank Controllers (MBC)
+                if self.cart_type == 0x00 {
+                    return; // ROM only: no MBC, ignore
+                }
+                match address {
+                    // RAM enable: low nibble == 0xA enables cartridge RAM.
+                    0x0000..=0x1FFF => self.ram_enabled = value & 0x0F == 0x0A,
+
+                    // ROM bank select (low 5 bits). A request for bank 0 maps to 1,
+                    // since bank 0 is already fixed at 0x0000-0x3FFF.
+                    0x2000..=0x3FFF => {
+                        let n = (value & 0x1F) as usize;
+                        self.rom_bank = if n == 0 { 1 } else { n };
+                    }
+
+                    // 0x4000-0x7FFF: RAM bank / upper ROM bits / mode -> chunk 2b
+                    _ => {}
+                }
             }
 
             // VRAM
@@ -205,15 +230,12 @@ impl Memory {
         self.write_byte(address.wrapping_add(1), (value >> 8) as u8);
     }
 
-    // Load ROM into memory
+    // Load the whole cartridge ROM (all banks) into memory.
     pub fn load_rom(&mut self, rom: &[u8]) {
-        let bank_0_size = std::cmp::min(rom.len(), 0x4000);
-        self.rom_bank_0[..bank_0_size].copy_from_slice(&rom[..bank_0_size]);
-
-        if rom.len() > 0x4000 {
-            let bank_n_size = std::cmp::min(rom.len() - 0x4000, 0x4000);
-            self.rom_bank_n[..bank_n_size].copy_from_slice(&rom[0x4000..0x4000 + bank_n_size]);
-        }
+        self.rom = rom.to_vec();
+        // Cartridge type lives in the header at 0x0147.
+        self.cart_type = self.rom.get(0x0147).copied().unwrap_or(0);
+        self.rom_bank = 1;
     }
 
     /// Set joypad press state from the frontend. Each is a low-nibble mask
@@ -347,6 +369,28 @@ mod tests {
         // Select action buttons instead: the direction press must NOT appear.
         memory.write_byte(0xFF00, 0x10); // bit5=0 actions selected, bit4=1 dir not
         assert_eq!(memory.read_byte(0xFF00) & 0x0F, 0x0F);
+    }
+
+    #[test]
+    fn test_mbc1_rom_bank_switch() {
+        let mut memory = Memory::new();
+        // 3-bank ROM (48KB); mark each bank's first byte so we can tell them apart.
+        let mut rom = vec![0u8; 0x4000 * 3];
+        rom[0x0147] = 0x01; // cartridge type = MBC1
+        rom[0x4000] = 0xAA; // bank 1, first byte
+        rom[0x8000] = 0xBB; // bank 2, first byte
+        memory.load_rom(&rom);
+
+        // Boots with bank 1 mapped at 0x4000.
+        assert_eq!(memory.read_byte(0x4000), 0xAA);
+
+        // Switch to bank 2.
+        memory.write_byte(0x2000, 0x02);
+        assert_eq!(memory.read_byte(0x4000), 0xBB);
+
+        // Requesting bank 0 maps to bank 1 (the MBC1 quirk).
+        memory.write_byte(0x2000, 0x00);
+        assert_eq!(memory.read_byte(0x4000), 0xAA);
     }
 
     #[test]
