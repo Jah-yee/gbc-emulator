@@ -324,6 +324,7 @@ impl Cpu {
 
             if ly < 144 {
                 self.render_scanline(ly);
+                self.render_sprites(ly);
             }
             let next_ly = if ly >= 153 { 0 } else { ly + 1 };
             self.memory.write_byte(0xFF44, next_ly);
@@ -446,6 +447,73 @@ impl Cpu {
             };
 
             self.framebuffer[ly as usize * 160 + x as usize] = apply_palette(bgp, color);
+        }
+    }
+
+    /// Draw sprites (OAM objects) that overlap scanline `ly`, on top of BG/window.
+    /// Simplifications: no BG priority (always on top), no 10-per-line limit.
+    fn render_sprites(&mut self, ly: u8) {
+        let lcdc = self.memory.read_byte(0xFF40);
+        if lcdc & 0x02 == 0 {
+            return; // LCDC bit 1: sprites (OBJ) disabled
+        }
+        let height: i16 = if lcdc & 0x04 != 0 { 16 } else { 8 }; // bit 2: 8x16 vs 8x8
+
+        // Reverse order so a lower OAM index ends up drawn last (= on top).
+        for i in (0..40u16).rev() {
+            let base = 0xFE00 + i * 4;
+            let oam_y = self.memory.read_byte(base) as i16; // screen Y + 16
+            let oam_x = self.memory.read_byte(base + 1) as i16; // screen X + 8
+            let tile = self.memory.read_byte(base + 2);
+            let flags = self.memory.read_byte(base + 3);
+
+            let top = oam_y - 16;
+            let left = oam_x - 8;
+
+            // Does this scanline fall within the sprite's vertical span?
+            let mut row = ly as i16 - top;
+            if row < 0 || row >= height {
+                continue;
+            }
+            if flags & 0x40 != 0 {
+                row = height - 1 - row; // Y-flip
+            }
+
+            // 8x16: low bit of the tile index is ignored; rows 0-7 use the first
+            // tile, rows 8-15 the next.
+            let tile_index = if height == 16 {
+                (tile & 0xFE) + (row / 8) as u8
+            } else {
+                tile
+            };
+            let row_in_tile = (row % 8) as u16;
+
+            // Sprites always use unsigned 0x8000 tile-data addressing.
+            let addr = 0x8000 + tile_index as u16 * 16 + row_in_tile * 2;
+            let low = self.memory.read_byte(addr);
+            let high = self.memory.read_byte(addr + 1);
+            let pixels = decode_tile_row(low, high);
+
+            // flag bit 4 selects the sprite palette.
+            let palette = if flags & 0x10 != 0 {
+                self.memory.read_byte(0xFF49) // OBP1
+            } else {
+                self.memory.read_byte(0xFF48) // OBP0
+            };
+
+            for col in 0..8i16 {
+                let px = if flags & 0x20 != 0 { 7 - col } else { col }; // X-flip
+                let color = pixels[px as usize];
+                if color == 0 {
+                    continue; // color 0 is transparent for sprites
+                }
+                let screen_x = left + col;
+                if !(0..160).contains(&screen_x) {
+                    continue; // off-screen horizontally
+                }
+                let shade = apply_palette(palette, color);
+                self.framebuffer[ly as usize * 160 + screen_x as usize] = shade;
+            }
         }
     }
 
@@ -2649,6 +2717,27 @@ mod instruction_tests {
 
         cpu.render_scanline(0);
 
+        assert_eq!(&cpu.framebuffer[0..8], &[0, 2, 3, 3, 3, 3, 2, 0]);
+    }
+
+    #[test]
+    fn test_render_sprite_with_transparency() {
+        let mut cpu = setup_cpu(vec![]);
+        // sprite tile #1, curve pattern row 0 -> color ids [0,2,3,3,3,3,2,0]
+        cpu.memory.write_byte(0x8010, 0x3C);
+        cpu.memory.write_byte(0x8011, 0x7E);
+        // OAM sprite 0: Y=16 (screen y=0), X=8 (screen x=0), tile 1, no flags
+        cpu.memory.write_byte(0xFE00, 16);
+        cpu.memory.write_byte(0xFE01, 8);
+        cpu.memory.write_byte(0xFE02, 1);
+        cpu.memory.write_byte(0xFE03, 0);
+        cpu.memory.write_byte(0xFF48, 0xE4); // OBP0 identity
+        cpu.memory.write_byte(0xFF40, 0b1000_0010); // LCD on (bit7), sprites on (bit1)
+
+        cpu.render_sprites(0);
+
+        // Color 0 is transparent, so px 0 and 7 stay at the framebuffer's 0; the
+        // rest are the sprite's shades.
         assert_eq!(&cpu.framebuffer[0..8], &[0, 2, 3, 3, 3, 3, 2, 0]);
     }
 }
