@@ -1084,6 +1084,102 @@ impl Cpu {
                 self.cycles += 4;
             }
 
+            // Accumulator rotates. Like the CB-prefix RLC/RRC/RL/RR but A-only,
+            // 1 byte, 4 cycles, and CRUCIALLY Z is ALWAYS cleared (N=0, H=0 too).
+
+            // RLCA — rotate A left, circular. Old bit 7 -> carry and -> bit 0.
+            0x07 => {
+                let a = self.registers.a;
+                let carry = a & 0x80 != 0;
+                self.registers.a = a.rotate_left(1);
+                self.registers.set_flag_zero(false);
+                self.registers.set_flag_subtract(false);
+                self.registers.set_flag_half_carry(false);
+                self.registers.set_flag_carry(carry);
+                self.cycles += 4;
+            }
+
+            // RRCA — rotate A right, circular. Old bit 0 -> carry and -> bit 7.
+            0x0F => {
+                let a = self.registers.a;
+                let carry = a & 0x01 != 0;
+                self.registers.a = a.rotate_right(1);
+                self.registers.set_flag_zero(false);
+                self.registers.set_flag_subtract(false);
+                self.registers.set_flag_half_carry(false);
+                self.registers.set_flag_carry(carry);
+                self.cycles += 4;
+            }
+
+            // RLA — rotate A left through carry. Old carry -> bit 0; old bit 7 -> carry.
+            0x17 => {
+                let a = self.registers.a;
+                let old_carry = self.registers.flag_carry() as u8;
+                let new_carry = a & 0x80 != 0;
+                self.registers.a = (a << 1) | old_carry;
+                self.registers.set_flag_zero(false);
+                self.registers.set_flag_subtract(false);
+                self.registers.set_flag_half_carry(false);
+                self.registers.set_flag_carry(new_carry);
+                self.cycles += 4;
+            }
+
+            // RRA — rotate A right through carry. Old carry -> bit 7; old bit 0 -> carry.
+            0x1F => {
+                let a = self.registers.a;
+                let old_carry = self.registers.flag_carry() as u8;
+                let new_carry = a & 0x01 != 0;
+                self.registers.a = (a >> 1) | (old_carry << 7);
+                self.registers.set_flag_zero(false);
+                self.registers.set_flag_subtract(false);
+                self.registers.set_flag_half_carry(false);
+                self.registers.set_flag_carry(new_carry);
+                self.cycles += 4;
+            }
+
+            // LD SP, HL — copy HL into the stack pointer (no flags)
+            0xF9 => {
+                self.sp = self.registers.hl();
+                self.cycles += 8;
+            }
+
+            // LD (a16), SP — store the 16-bit SP at an absolute address (little-endian)
+            0x08 => {
+                let addr = self.fetch_word();
+                self.memory.write_word(addr, self.sp);
+                self.cycles += 20;
+            }
+
+            // ADD SP, r8 — SP += signed 8-bit offset.
+            // Z=0, N=0; H and C come from the UNSIGNED low-byte/low-nibble add, not the
+            // 16-bit result. r8 is sign-extended for the actual addition.
+            0xE8 => {
+                let r8 = self.fetch_byte() as i8 as i16 as u16;
+                let sp = self.sp;
+                self.registers.set_flag_zero(false);
+                self.registers.set_flag_subtract(false);
+                self.registers
+                    .set_flag_half_carry((sp & 0x0F) + (r8 & 0x0F) > 0x0F);
+                self.registers.set_flag_carry((sp & 0xFF) + (r8 & 0xFF) > 0xFF);
+                self.sp = sp.wrapping_add(r8);
+                self.cycles += 16;
+            }
+
+            // LD HL, SP+r8 — HL = SP + signed 8-bit offset. Same flag rules as ADD SP,r8.
+            0xF8 => {
+                let r8 = self.fetch_byte() as i8 as i16 as u16;
+                let sp = self.sp;
+                self.registers.set_flag_zero(false);
+                self.registers.set_flag_subtract(false);
+                self.registers
+                    .set_flag_half_carry((sp & 0x0F) + (r8 & 0x0F) > 0x0F);
+                self.registers.set_flag_carry((sp & 0xFF) + (r8 & 0xFF) > 0xFF);
+                let result = sp.wrapping_add(r8);
+                self.registers.h = (result >> 8) as u8;
+                self.registers.l = result as u8;
+                self.cycles += 12;
+            }
+
             //...so I need to implement all 256 opcodes?
             _ => panic!(
                 "Unimplemented opcode: 0x{:02X} at PC: 0x{:04X}",
