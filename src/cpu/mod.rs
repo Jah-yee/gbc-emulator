@@ -388,13 +388,32 @@ impl Cpu {
         }
     }
 
-    /// Render one background scanline into the framebuffer.
-    /// Hardcodes map 0x9800 + 0x8000 tile data; LCDC/palette come next chunk
+    /// Look up one pixel's color id (0-3) from a tile map. `px_x`/`px_y` are
+    /// coordinates in the 256x256 map space; `map_base` is 0x9800 or 0x9C00.
+    /// Tile-data addressing follows LCDC bit 4 (unsigned 0x8000 vs signed 0x9000).
+    fn tile_pixel(&self, map_base: u16, px_x: u16, px_y: u16, lcdc: u8) -> u8 {
+        let tile_col = (px_x / 8) & 31;
+        let tile_row = (px_y / 8) & 31;
+        let tile_id = self.memory.read_byte(map_base + tile_row * 32 + tile_col);
+
+        let tile_addr: u16 = if lcdc & 0x10 != 0 {
+            0x8000 + (tile_id as u16) * 16
+        } else {
+            (0x9000_i32 + (tile_id as i8 as i32) * 16) as u16
+        };
+
+        let row_addr = tile_addr + (px_y % 8) * 2;
+        let low = self.memory.read_byte(row_addr);
+        let high = self.memory.read_byte(row_addr + 1);
+        decode_tile_row(low, high)[(px_x % 8) as usize]
+    }
+
+    /// Render one scanline (background + window) into the framebuffer.
     fn render_scanline(&mut self, ly: u8) {
-        let scy = self.memory.read_byte(0xFF42);
-        let scx = self.memory.read_byte(0xFF43);
         let lcdc = self.memory.read_byte(0xFF40);
         let bgp = self.memory.read_byte(0xFF47);
+
+        // BG disabled -> blank line.
         if lcdc & 0x01 == 0 {
             for x in 0..160usize {
                 self.framebuffer[ly as usize * 160 + x] = 0;
@@ -402,38 +421,31 @@ impl Cpu {
             return;
         }
 
-        let map_base: u16 = if (lcdc & 0x08) != 0 { 0x9C00 } else { 0x9800 };
+        let scy = self.memory.read_byte(0xFF42);
+        let scx = self.memory.read_byte(0xFF43);
+        let wy = self.memory.read_byte(0xFF4A);
+        let wx = self.memory.read_byte(0xFF4B);
 
-        let bg_y = (ly as u16 + scy as u16) & 0xFF; // wraps in the 256px-tall map
-        let tile_row = bg_y / 8; // which tile row (0-31)
-        let row_in_tile = bg_y % 8; // which of the tile's 8 rows
+        let window_on = lcdc & 0x20 != 0; // LCDC bit 5
+        let bg_map = if lcdc & 0x08 != 0 { 0x9C00 } else { 0x9800 }; // bit 3
+        let win_map = if lcdc & 0x40 != 0 { 0x9C00 } else { 0x9800 }; // bit 6
 
         for x in 0..160u16 {
-            let bg_x = (x + scx as u16) & 0xFF; // wraps in the 256-px wide map
-            let tile_col = bg_x / 8;
-            let px_in_tile = (bg_x % 8) as usize;
+            // The window covers a pixel when enabled and we're past its origin
+            // (top-left at screen (WX-7, WY)). The window does not scroll.
+            let in_window = window_on && ly as u16 >= wy as u16 && x + 7 >= wx as u16;
 
-            // look up the tile index in the 32-wide map
-            let map_addr = map_base + tile_row * 32 + tile_col;
-            let tile_id = self.memory.read_byte(map_addr);
-
-            // that tile's data, then the 2 bytes for this row
-            let tile_addr: u16 = if lcdc & 0x10 != 0 {
-                0x8000 + (tile_id as u16) * 16
+            let color = if in_window {
+                let win_x = x + 7 - wx as u16;
+                let win_y = ly as u16 - wy as u16;
+                self.tile_pixel(win_map, win_x, win_y, lcdc)
             } else {
-                (0x9000_i32 + (tile_id as i8 as i32) * 16) as u16
+                let bg_x = (x + scx as u16) & 0xFF;
+                let bg_y = (ly as u16 + scy as u16) & 0xFF;
+                self.tile_pixel(bg_map, bg_x, bg_y, lcdc)
             };
 
-            let row_addr = tile_addr + row_in_tile * 2;
-            let low = self.memory.read_byte(row_addr);
-            let high = self.memory.read_byte(row_addr + 1);
-
-            // decode the row, pick pixel
-            let color = decode_tile_row(low, high)[px_in_tile];
-            let shade = apply_palette(bgp, color);
-
-            // store it
-            self.framebuffer[(ly as usize * 160) + (x as usize)] = shade;
+            self.framebuffer[ly as usize * 160 + x as usize] = apply_palette(bgp, color);
         }
     }
 
@@ -2619,5 +2631,24 @@ mod instruction_tests {
         assert!(s.contains("SP:FFFE"), "debug_state was: {s}");
         // Post-boot LCDC default we seed in Memory::new.
         assert!(s.contains("LCDC:91"), "debug_state was: {s}");
+    }
+
+    #[test]
+    fn test_render_window_layer() {
+        let mut cpu = setup_cpu(vec![]);
+        // tile #1, curve pattern, in the 0x8000 (unsigned) region
+        cpu.memory.write_byte(0x8010, 0x3C);
+        cpu.memory.write_byte(0x8011, 0x7E);
+        cpu.memory.write_byte(0x9C00, 0x01); // WINDOW map (0,0) -> tile #1
+        // BG map at 0x9800 left all-zero (blank) so only the window can produce this.
+        cpu.memory.write_byte(0xFF47, 0xE4); // identity palette
+        cpu.memory.write_byte(0xFF4A, 0x00); // WY = 0
+        cpu.memory.write_byte(0xFF4B, 0x07); // WX = 7 -> window starts at screen x=0
+        // LCDC: LCD on, window map 0x9C00 (bit6), window on (bit5), unsigned data (bit4), BG on (bit0)
+        cpu.memory.write_byte(0xFF40, 0b1111_0001);
+
+        cpu.render_scanline(0);
+
+        assert_eq!(&cpu.framebuffer[0..8], &[0, 2, 3, 3, 3, 3, 2, 0]);
     }
 }
