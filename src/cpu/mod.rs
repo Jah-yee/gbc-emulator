@@ -1223,7 +1223,7 @@ impl Cpu {
 
                     4 => {
                         let c = value & 0x80 != 0;
-                        (value, c)
+                        (value << 1, c)
                     } // SLA
 
                     5 => {
