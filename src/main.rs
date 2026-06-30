@@ -59,7 +59,7 @@ fn set_key(k: sdl2::keyboard::Keycode, pressed: bool, dpad: &mut u8, buttons: &m
 
 ///
 #[cfg(feature = "gui")]
-fn run_window(mut cpu: Cpu) {
+fn run_window(mut cpu: Cpu) -> Cpu {
     use sdl2::{event::Event, keyboard::Keycode, pixels::PixelFormatEnum};
 
     const SCALE: u32 = 4;
@@ -135,17 +135,27 @@ fn run_window(mut cpu: Cpu) {
         canvas.copy(&texture, None, None).unwrap();
         canvas.present();
     }
+
+    cpu // hand the CPU back so main can persist the save
 }
 
 fn main() {
     let mut cpu = Cpu::new();
-    // setup_demo(&mut cpu);
     let path = std::env::args().nth(1).expect("usage: gbc <rom.gb>");
     let rom = std::fs::read(&path).expect("failed to read ROM");
     cpu.memory.load_rom(&rom);
 
+    // Battery save: load the .sav next to the ROM, if one exists.
+    let save_path = format!("{path}.sav");
+    if let Ok(data) = std::fs::read(&save_path) {
+        cpu.memory.load_ram(&data);
+        eprintln!("loaded save: {save_path}");
+    }
+
     #[cfg(feature = "gui")]
-    run_window(cpu);
+    {
+        cpu = run_window(cpu);
+    }
 
     #[cfg(not(feature = "gui"))]
     {
@@ -166,6 +176,13 @@ fn main() {
         eprintln!("[serial] {}", cpu.memory.serial);
         if !cpu.trace {
             print_frame_ascii(&cpu);
+        }
+    }
+
+    // Battery save: write cartridge RAM back out on exit (battery carts only).
+    if cpu.memory.has_battery() {
+        if std::fs::write(&save_path, cpu.memory.ram_snapshot()).is_ok() {
+            eprintln!("saved: {save_path}");
         }
     }
 }

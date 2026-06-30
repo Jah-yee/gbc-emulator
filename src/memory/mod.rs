@@ -272,6 +272,25 @@ impl Memory {
         self.ram_enabled = false;
     }
 
+    /// True if the cartridge has battery-backed RAM (its save persists).
+    pub fn has_battery(&self) -> bool {
+        matches!(
+            self.cart_type,
+            0x03 | 0x06 | 0x09 | 0x0D | 0x0F | 0x10 | 0x13 | 0x1B | 0x1E
+        )
+    }
+
+    /// Current contents of cartridge RAM (for writing a .sav file).
+    pub fn ram_snapshot(&self) -> &[u8] {
+        &self.external_ram
+    }
+
+    /// Load saved cartridge RAM (from a .sav file) back into memory.
+    pub fn load_ram(&mut self, data: &[u8]) {
+        let n = data.len().min(self.external_ram.len());
+        self.external_ram[..n].copy_from_slice(&data[..n]);
+    }
+
     /// Set joypad press state from the frontend. Each is a low-nibble mask
     /// (1 = pressed): dpad = Right/Left/Up/Down (bits 0-3),
     /// buttons = A/B/Select/Start (bits 0-3).
