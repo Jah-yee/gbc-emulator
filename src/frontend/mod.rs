@@ -89,7 +89,7 @@ impl App {
             Hotkey::Pause => {
                 self.state = match self.state {
                     AppState::Playing => AppState::Paused,
-                    AppState::Paused => AppState::Playing,
+                    _ => AppState::Playing,
                 };
             }
             Hotkey::QuickSave => {
