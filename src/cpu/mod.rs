@@ -227,6 +227,7 @@ impl Cpu {
             self.cycles += 4;
             self.step_timer(4);
             self.step_ppu(4);
+            self.memory.apu.step(4);
             return;
         }
 
@@ -261,6 +262,7 @@ impl Cpu {
         let elapsed = (self.cycles - before) as u32;
         self.step_timer(elapsed);
         self.step_ppu(elapsed);
+        self.memory.apu.step(elapsed);
     }
 
     /// Advance the timer by the number of cycles the last instruction took.

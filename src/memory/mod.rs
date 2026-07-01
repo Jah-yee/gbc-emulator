@@ -1,5 +1,7 @@
 // src/memory/mod.rs
 
+use crate::apu::Apu;
+
 pub struct Memory {
     // The entire cartridge ROM (all banks, however big).
     rom: Vec<u8>,
@@ -54,6 +56,9 @@ pub struct Memory {
     obj_palette: [u8; 64], // CGB sprite palette RAM
     bcps: u8,              // 0xFF68: BG palette index (bits 0-5) + auto-increment (bit 7)
     ocps: u8,              // 0xFF6A: OBJ palette index + auto-increment
+
+    // Audio.
+    pub apu: Apu,
 }
 
 impl Memory {
@@ -82,6 +87,7 @@ impl Memory {
             obj_palette: [0; 64],
             bcps: 0,
             ocps: 0,
+            apu: Apu::new(),
         };
         // Post-boot register defaults (values the boot ROM leaves behind). Games
         // like Tetris rely on these instead of setting them, so without them the
@@ -146,6 +152,9 @@ impl Memory {
                 }
                 0xC0 | self.joypad_select | low
             }
+
+            // Audio registers delegate to the APU.
+            0xFF10..=0xFF3F => self.apu.read_reg(address),
 
             // CGB: VRAM bank register (unused bits read as 1).
             0xFF4F => 0xFE | self.vram_bank as u8,
@@ -266,6 +275,9 @@ impl Memory {
                 }
                 self.io_registers[0x46] = value; // keep the register readable
             }
+
+            // Audio registers delegate to the APU.
+            0xFF10..=0xFF3F => self.apu.write_reg(address, value),
 
             // CGB: select the VRAM bank (bit 0).
             0xFF4F => self.vram_bank = value as usize & 1,

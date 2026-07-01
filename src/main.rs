@@ -1,5 +1,6 @@
 // src/main.rs
 
+mod apu;
 mod cpu;
 mod memory;
 
@@ -60,6 +61,7 @@ fn set_key(k: sdl2::keyboard::Keycode, pressed: bool, dpad: &mut u8, buttons: &m
 ///
 #[cfg(feature = "gui")]
 fn run_window(mut cpu: Cpu) -> Cpu {
+    use sdl2::audio::{AudioQueue, AudioSpecDesired};
     use sdl2::{event::Event, keyboard::Keycode, pixels::PixelFormatEnum};
 
     const SCALE: u32 = 4;
@@ -82,6 +84,16 @@ fn run_window(mut cpu: Cpu) -> Cpu {
         .unwrap();
 
     let mut event_pump = sdl.event_pump().unwrap();
+
+    // Audio: open a mono 44.1kHz queue and feed it the APU's samples each frame.
+    let audio = sdl.audio().unwrap();
+    let desired = AudioSpecDesired {
+        freq: Some(44_100),
+        channels: Some(1),
+        samples: Some(2048),
+    };
+    let audio_queue: AudioQueue<f32> = audio.open_queue(None, &desired).unwrap();
+    audio_queue.resume();
 
     // Joypad press masks (low nibble each, 1 = pressed), updated on key events.
     let mut dpad = 0u8;
@@ -114,6 +126,13 @@ fn run_window(mut cpu: Cpu) -> Cpu {
 
         // advance one frame
         run_one_frame(&mut cpu);
+
+        // Feed generated audio to the sound card. Drop batches if the queue is
+        // already ahead (>~0.1s) to keep latency bounded (proper A/V sync later).
+        let samples: Vec<f32> = cpu.memory.apu.output.drain(..).collect();
+        if audio_queue.size() < 16_384 {
+            let _ = audio_queue.queue_audio(&samples);
+        }
 
         // copy framebuffer -> texture (part 3 fills this in)
         texture
