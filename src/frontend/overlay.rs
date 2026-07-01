@@ -20,9 +20,9 @@ pub fn draw(canvas: &mut Canvas<Window>, cpu: &Cpu, queued_bytes: i32) {
     // Full width ~= 64 KB queued; our pace target is ~16 KB, so a healthy buffer
     // sits around a quarter. Steady growth toward full points at the echo.
     let buf_frac = (queued_bytes as f32 / 65_536.0).clamp(0.0, 1.0);
-    canvas.set_draw_color(Color::RGBA(20, 20, 20, 200));
+    canvas.set_draw_color(Color::RGB(20, 20, 20));
     let _ = canvas.fill_rect(Rect::new(0, 0, WIN_W, 6));
-    canvas.set_draw_color(Color::RGBA(220, 200, 40, 230));
+    canvas.set_draw_color(Color::RGB(220, 200, 40));
     let _ = canvas.fill_rect(Rect::new(0, 0, (WIN_W as f32 * buf_frac) as u32, 6));
 
     // --- per-channel level meters (top-left) ---
@@ -33,14 +33,14 @@ pub fn draw(canvas: &mut Canvas<Window>, cpu: &Cpu, queued_bytes: i32) {
     let base_y: i32 = 10;
     for (i, &lvl) in levels.iter().enumerate() {
         let x = gap + i as i32 * (bar_w as i32 + gap);
-        canvas.set_draw_color(Color::RGBA(30, 30, 30, 200)); // track
+        canvas.set_draw_color(Color::RGB(30, 30, 30)); // track
         let _ = canvas.fill_rect(Rect::new(x, base_y, bar_w, max_h as u32));
 
         let h = (lvl.clamp(0.0, 1.0) * max_h as f32) as i32;
         let color = if cpu.memory.apu.is_muted(i) {
-            Color::RGBA(120, 40, 40, 230) // muted -> dim red
+            Color::RGB(120, 40, 40) // muted -> dim red
         } else {
-            Color::RGBA(60, 220, 90, 230) // active -> green
+            Color::RGB(60, 220, 90) // active -> green
         };
         canvas.set_draw_color(color);
         let _ = canvas.fill_rect(Rect::new(x, base_y + (max_h - h), bar_w, h as u32));

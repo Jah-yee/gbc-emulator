@@ -194,9 +194,6 @@ pub fn run(cpu: Cpu, rom_path: String) -> Cpu {
         show_debug: false,
     };
 
-    // Enable alpha blending so the pause overlay can dim the frame.
-    canvas.set_blend_mode(BlendMode::Blend);
-
     // Reflect the current/target speed in the title bar, updating only on change.
     let mut shown: Option<(bool, u32)> = None;
 
@@ -225,25 +222,36 @@ pub fn run(cpu: Cpu, rom_path: String) -> Cpu {
             AppState::Playing => {
                 app.cpu.memory.set_joypad(app.dpad, app.buttons);
 
-                if app.fast_forward {
-                    // Run several frames unthrottled, discarding their audio so the
-                    // stream doesn't back up, and present only the last frame.
-                    for _ in 0..app.speed_mult {
-                        run_one_frame(&mut app.cpu);
-                        app.cpu.memory.apu.output.clear();
-                    }
-                } else {
-                    // Pace to audio playback: if the stream still has plenty
-                    // buffered, wait and loop back (events keep polling -> stays
-                    // responsive).
-                    if audio_stream.queued_bytes().unwrap_or(0) > 16_384 {
-                        std::thread::sleep(std::time::Duration::from_millis(1));
-                        continue;
-                    }
-                    run_one_frame(&mut app.cpu);
-                    let samples: Vec<f32> = app.cpu.memory.apu.output.drain(..).collect();
-                    let _ = audio_stream.put_data_f32(&samples);
+                // Pace to audio playback (keeps speed correct on any monitor and
+                // keeps input responsive - events are polled at the top of the loop).
+                if audio_stream.queued_bytes().unwrap_or(0) > 16_384 {
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                    continue;
                 }
+
+                // Fast-forward runs N frames per paced step; audio is decimated by
+                // N so it plays sped up at the correct rate (no muting, no backlog).
+                let n = if app.fast_forward {
+                    app.speed_mult as usize
+                } else {
+                    1
+                };
+                for _ in 0..n {
+                    run_one_frame(&mut app.cpu);
+                }
+                let out = &mut app.cpu.memory.apu.output;
+                let samples: Vec<f32> = if n == 1 {
+                    out.drain(..).collect()
+                } else {
+                    let d: Vec<f32> = out
+                        .chunks_exact(2)
+                        .step_by(n)
+                        .flat_map(|c| [c[0], c[1]])
+                        .collect();
+                    out.clear();
+                    d
+                };
+                let _ = audio_stream.put_data_f32(&samples);
 
                 blit(&app.cpu, &mut texture);
                 canvas.set_draw_color(Color::RGB(0, 0, 0));
@@ -262,8 +270,13 @@ pub fn run(cpu: Cpu, rom_path: String) -> Cpu {
                 canvas.set_draw_color(Color::RGB(0, 0, 0));
                 canvas.clear();
                 canvas.copy(&texture, None, None).unwrap();
+                // Blend only for the dim overlay, then restore opaque drawing so the
+                // per-frame game copy stays a cheap straight blit (avoids lag on a
+                // software renderer).
+                canvas.set_blend_mode(BlendMode::Blend);
                 canvas.set_draw_color(Color::RGBA(0, 0, 0, 128));
                 let _ = canvas.fill_rect(None);
+                canvas.set_blend_mode(BlendMode::None);
                 if app.show_debug {
                     let q = audio_stream.queued_bytes().unwrap_or(0);
                     overlay::draw(&mut canvas, &app.cpu, q);
