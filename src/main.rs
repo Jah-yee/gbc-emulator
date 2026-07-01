@@ -120,7 +120,7 @@ fn run_window(mut cpu: Cpu) -> Cpu {
             .with_lock(None, |buf: &mut [u8], pitch: usize| {
                 for y in 0..144 {
                     for x in 0..160 {
-                        let (r, g, b) = shade_to_rgb(cpu.framebuffer[y * 160 + x]);
+                        let (r, g, b) = cpu.framebuffer[y * 160 + x];
                         let offset = y * pitch + x * 3;
                         buf[offset] = r;
                         buf[offset + 1] = g;
@@ -189,13 +189,11 @@ fn main() {
 
 #[cfg(not(feature = "gui"))]
 fn print_frame_ascii(cpu: &Cpu) {
-    const SHADES: [char; 4] = [' ', '.', '+', '#']; // 0 =lightest .. 3 =darkest
-
     for y in (0..144).step_by(2) {
         let mut line = String::new();
         for x in (0..160).step_by(2) {
-            let (tr, tg, tb) = shade_to_rgb(cpu.framebuffer[y * 160 + x]);
-            let (br, bg, bb) = shade_to_rgb(cpu.framebuffer[(y + 1) * 160 + x]);
+            let (tr, tg, tb) = cpu.framebuffer[y * 160 + x];
+            let (br, bg, bb) = cpu.framebuffer[(y + 1) * 160 + x];
             line.push_str(&format!(
                 "\x1b[38;2;{tr};{tg};{tb}m\x1b[48;2;{br};{bg};{bb}m\u{2580}",
             ));
@@ -205,17 +203,4 @@ fn print_frame_ascii(cpu: &Cpu) {
     }
 }
 
-/// Map a 2-bit shade (0=lightest, 3=darkest) to a 0x00RRGGBB pixel
-fn shade_to_rgb(shade: u8) -> (u8, u8, u8) {
-    match shade {
-        // 0 => 0xFF_FF_FF, // white
-        0 => (224, 248, 208), //lightest
-        // 1 => 0xAA_AA_AA, // light gray
-        1 => (136, 192, 112), // mid-light green
-        // 2 => 0x55_55_55, // dark gray
-        2 => (52, 104, 86), // mid-dark green
-        // _ => 0x00_00_00, // black
-        _ => (8, 24, 32), // darkest
-    }
-}
 

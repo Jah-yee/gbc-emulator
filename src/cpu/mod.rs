@@ -195,7 +195,7 @@ pub struct Cpu {
     pub div_counter: u16,  // accumulates cycles for DIV (DIV = its high byte)
     pub tima_counter: u32, // accumulates cycles for TIMA
     pub ppu_dots: u32,     // accumulates cycles within the current scanline
-    pub framebuffer: [u8; 160 * 144], // one color id (0-3) per pixel
+    pub framebuffer: [(u8, u8, u8); 160 * 144], // RGB per pixel
     pub trace: bool,       // Gameboy Doctor trace mode (GBC_TRACE env var)
 }
 
@@ -212,7 +212,7 @@ impl Cpu {
             div_counter: 0,
             tima_counter: 0,
             ppu_dots: 0,
-            framebuffer: [0; 160 * 144],
+            framebuffer: [(224, 248, 208); 160 * 144], // DMG blank = lightest green
             trace: std::env::var("GBC_TRACE").is_ok(),
         }
     }
@@ -417,7 +417,7 @@ impl Cpu {
         // BG disabled -> blank line.
         if lcdc & 0x01 == 0 {
             for x in 0..160usize {
-                self.framebuffer[ly as usize * 160 + x] = 0;
+                self.framebuffer[ly as usize * 160 + x] = dmg_rgb(0);
             }
             return;
         }
@@ -446,7 +446,7 @@ impl Cpu {
                 self.tile_pixel(bg_map, bg_x, bg_y, lcdc)
             };
 
-            self.framebuffer[ly as usize * 160 + x as usize] = apply_palette(bgp, color);
+            self.framebuffer[ly as usize * 160 + x as usize] = dmg_rgb(apply_palette(bgp, color));
         }
     }
 
@@ -512,7 +512,7 @@ impl Cpu {
                     continue; // off-screen horizontally
                 }
                 let shade = apply_palette(palette, color);
-                self.framebuffer[ly as usize * 160 + screen_x as usize] = shade;
+                self.framebuffer[ly as usize * 160 + screen_x as usize] = dmg_rgb(shade);
             }
         }
     }
@@ -545,7 +545,7 @@ impl Cpu {
         let map2_nz = (0x9C00u16..0xA000) // window map (or BG if LCDC bit3=1)
             .filter(|&a| self.memory.read_byte(a) != 0)
             .count();
-        let fb_nz = self.framebuffer.iter().filter(|&&p| p != 0).count();
+        let fb_nz = self.framebuffer.iter().filter(|&&p| p != dmg_rgb(0)).count();
 
         format!(
             "A:{:02X} F:{:02X}({}) B:{:02X} C:{:02X} D:{:02X} E:{:02X} H:{:02X} L:{:02X} \
@@ -1659,6 +1659,17 @@ fn apply_palette(palette: u8, color: u8) -> u8 {
     (palette >> (color * 2)) & 0b11
 }
 
+/// Convert a DMG 2-bit shade to an (R,G,B) pixel (classic Game Boy green).
+/// This is where DMG monochrome becomes real RGB; CGB will use its own palettes.
+fn dmg_rgb(shade: u8) -> (u8, u8, u8) {
+    match shade {
+        0 => (224, 248, 208),
+        1 => (136, 192, 112),
+        2 => (52, 104, 86),
+        _ => (8, 24, 32),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2630,7 +2641,7 @@ mod instruction_tests {
 
         cpu.render_scanline(0);
 
-        assert_eq!(&cpu.framebuffer[0..8], &[0, 2, 3, 3, 3, 3, 2, 0]);
+        assert_eq!(&cpu.framebuffer[0..8], &[0u8, 2, 3, 3, 3, 3, 2, 0].map(dmg_rgb));
     }
 
     #[test]
@@ -2653,7 +2664,7 @@ mod instruction_tests {
         cpu.memory.write_byte(0xFF40, 0x01); // bit4=0 signed 0x9000 mode + BG enable
         cpu.memory.write_byte(0xFF47, 0xE4); // identity palette
         cpu.render_scanline(0);
-        assert_eq!(&cpu.framebuffer[0..8], &[0, 2, 3, 3, 3, 3, 2, 0]);
+        assert_eq!(&cpu.framebuffer[0..8], &[0u8, 2, 3, 3, 3, 3, 2, 0].map(dmg_rgb));
     }
 
     #[test]
@@ -2667,7 +2678,7 @@ mod instruction_tests {
 
         cpu.step_ppu(456); // complete scanline 0 -> renders it, LY -> 1 
 
-        assert_eq!(&cpu.framebuffer[0..8], &[0, 2, 3, 3, 3, 3, 2, 0]);
+        assert_eq!(&cpu.framebuffer[0..8], &[0u8, 2, 3, 3, 3, 3, 2, 0].map(dmg_rgb));
     }
     #[test]
     fn test_ppu_lcd_disabled_holds_ly_zero() {
@@ -2687,7 +2698,7 @@ mod instruction_tests {
         cpu.memory.write_byte(0xFF40, 0b1001_0000); // LCD on (bit7), data 0x8000 (bit4), BG OFF
         // (bit0=0)
         cpu.render_scanline(0);
-        assert_eq!(&cpu.framebuffer[0..8], &[0; 8]); // ...but BG-disable blanks it
+        assert_eq!(&cpu.framebuffer[0..8], &[dmg_rgb(0); 8]); // ...but BG-disable blanks it
     }
 
     #[test]
@@ -2717,7 +2728,7 @@ mod instruction_tests {
 
         cpu.render_scanline(0);
 
-        assert_eq!(&cpu.framebuffer[0..8], &[0, 2, 3, 3, 3, 3, 2, 0]);
+        assert_eq!(&cpu.framebuffer[0..8], &[0u8, 2, 3, 3, 3, 3, 2, 0].map(dmg_rgb));
     }
 
     #[test]
@@ -2738,6 +2749,6 @@ mod instruction_tests {
 
         // Color 0 is transparent, so px 0 and 7 stay at the framebuffer's 0; the
         // rest are the sprite's shades.
-        assert_eq!(&cpu.framebuffer[0..8], &[0, 2, 3, 3, 3, 3, 2, 0]);
+        assert_eq!(&cpu.framebuffer[0..8], &[0u8, 2, 3, 3, 3, 3, 2, 0].map(dmg_rgb));
     }
 }
