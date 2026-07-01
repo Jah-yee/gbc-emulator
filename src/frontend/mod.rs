@@ -37,6 +37,8 @@ struct App {
     quick_slot: Option<Box<Cpu>>,
     /// True while the fast-forward key is held.
     fast_forward: bool,
+    /// Fast-forward multiplier (frames run per loop while held). Adjustable.
+    speed_mult: u32,
 }
 
 impl App {
@@ -103,6 +105,8 @@ impl App {
                 }
             }
             Hotkey::FastForward => self.fast_forward = true,
+            Hotkey::SpeedDown => self.speed_mult = (self.speed_mult - 1).max(2),
+            Hotkey::SpeedUp => self.speed_mult = (self.speed_mult + 1).min(8),
             Hotkey::LoadRom => self.state = AppState::LoadRom,
             Hotkey::SaveFile => {
                 let path = format!("{}.state", self.rom_path);
@@ -170,10 +174,14 @@ pub fn run(cpu: Cpu, rom_path: String) -> Cpu {
         should_quit: false,
         quick_slot: None,
         fast_forward: false,
+        speed_mult: 4,
     };
 
     // Enable alpha blending so the pause overlay can dim the frame.
     canvas.set_blend_mode(BlendMode::Blend);
+
+    // Reflect the current/target speed in the title bar, updating only on change.
+    let mut shown: Option<(bool, u32)> = None;
 
     'running: loop {
         for event in event_pump.poll_iter() {
@@ -183,6 +191,19 @@ pub fn run(cpu: Cpu, rom_path: String) -> Cpu {
             break 'running;
         }
 
+        let key = (app.fast_forward, app.speed_mult);
+        if shown != Some(key) {
+            shown = Some(key);
+            let status = if app.fast_forward {
+                format!("{}%", app.speed_mult * 100)
+            } else {
+                format!("FF={}x", app.speed_mult)
+            };
+            let _ = canvas
+                .window_mut()
+                .set_title(&format!("gbc - {} - {}", app.rom_path, status));
+        }
+
         match app.state {
             AppState::Playing => {
                 app.cpu.memory.set_joypad(app.dpad, app.buttons);
@@ -190,8 +211,7 @@ pub fn run(cpu: Cpu, rom_path: String) -> Cpu {
                 if app.fast_forward {
                     // Run several frames unthrottled, discarding their audio so the
                     // stream doesn't back up, and present only the last frame.
-                    const SPEED: u32 = 4;
-                    for _ in 0..SPEED {
+                    for _ in 0..app.speed_mult {
                         run_one_frame(&mut app.cpu);
                         app.cpu.memory.apu.output.clear();
                     }
@@ -237,6 +257,7 @@ pub fn run(cpu: Cpu, rom_path: String) -> Cpu {
                     app.buttons = 0;
                     app.quick_slot = None;
                     let _ = audio_stream.clear();
+                    shown = None; // refresh the title with the new ROM name
                 }
                 app.state = AppState::Playing;
             }

@@ -26,6 +26,8 @@ pub enum Hotkey {
     LoadFile,
     LoadRom,
     FastForward,
+    SpeedDown,
+    SpeedUp,
 }
 
 pub struct InputConfig {
@@ -45,16 +47,20 @@ impl Default for InputConfig {
             (Keycode::Backspace, Pad::Btn(0b0100)), // Select
             (Keycode::Return, Pad::Btn(0b1000)),    // Start
         ]);
+        // Avoid the function-row keys: macOS hijacks F1-F12 for system functions
+        // and SDL often never sees them. Use the number row + letters instead.
         let hotkeys = HashMap::from([
             (Keycode::Escape, Hotkey::Quit),
             (Keycode::D, Hotkey::Debug),
             (Keycode::P, Hotkey::Pause),
-            (Keycode::F5, Hotkey::QuickSave),
-            (Keycode::F9, Hotkey::QuickLoad),
-            (Keycode::F2, Hotkey::SaveFile),
-            (Keycode::F3, Hotkey::LoadFile),
+            (Keycode::_1, Hotkey::QuickSave),
+            (Keycode::_2, Hotkey::QuickLoad),
+            (Keycode::_3, Hotkey::SaveFile),
+            (Keycode::_4, Hotkey::LoadFile),
             (Keycode::O, Hotkey::LoadRom),
             (Keycode::Space, Hotkey::FastForward),
+            (Keycode::Minus, Hotkey::SpeedDown),
+            (Keycode::Equals, Hotkey::SpeedUp),
         ]);
         Self { game, hotkeys }
     }
