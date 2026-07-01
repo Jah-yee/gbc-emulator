@@ -128,17 +128,21 @@ fn run_window(mut cpu: Cpu) -> Cpu {
         }
         cpu.memory.set_joypad(dpad, buttons);
 
+        // Pace to audio playback: if the sound queue still has plenty buffered,
+        // wait a moment and loop back WITHOUT running a frame. Because we poll
+        // events at the top of every iteration, input stays responsive while we
+        // wait (a blocking sleep here would make the window unresponsive).
+        if audio_queue.size() > 8192 {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            continue;
+        }
+
         // advance one frame
         run_one_frame(&mut cpu);
 
-        // Feed generated audio to the sound card, then pace the emulator to
-        // playback: if we're running ahead, wait for the queue to drain. This
-        // keeps real speed on any monitor and stops the stream over/underrunning.
+        // Feed generated audio to the sound card.
         let samples: Vec<f32> = cpu.memory.apu.output.drain(..).collect();
         let _ = audio_queue.queue_audio(&samples);
-        while audio_queue.size() > 8192 {
-            std::thread::sleep(std::time::Duration::from_millis(1));
-        }
 
         // copy framebuffer -> texture (part 3 fills this in)
         texture
