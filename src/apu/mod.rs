@@ -385,6 +385,8 @@ pub struct Apu {
     hpf_r: f32,
     /// Generated interleaved stereo samples (L, R, L, R, ...), drained by the frontend.
     pub output: Vec<f32>,
+    /// Debug: per-channel mute (index 0-3 = ch1-4). Silences a channel in the mix.
+    mute: [bool; 4],
 }
 
 /// One-pole high-pass filter: removes the DC offset so silence sits at 0 and
@@ -411,7 +413,20 @@ impl Apu {
             hpf_l: 0.0,
             hpf_r: 0.0,
             output: Vec::new(),
+            mute: [false; 4],
         }
+    }
+
+    /// Debug: toggle a channel's mute (0-3 = ch1-4). Out-of-range is ignored.
+    pub fn toggle_mute(&mut self, ch: usize) {
+        if let Some(m) = self.mute.get_mut(ch) {
+            *m = !*m;
+        }
+    }
+
+    /// Debug: is channel `ch` (0-3) currently muted?
+    pub fn is_muted(&self, ch: usize) -> bool {
+        self.mute.get(ch).copied().unwrap_or(false)
     }
 
     pub fn read_reg(&self, addr: u16) -> u8 {
@@ -540,6 +555,9 @@ impl Apu {
         let mut left = 0.0f32;
         let mut right = 0.0f32;
         for (i, &s) in samples.iter().enumerate() {
+            if self.mute[i] {
+                continue; // debug: this channel is muted out of the mix
+            }
             let a = s as f32 / 15.0; // 0.0..1.0
             if self.nr51 & (1 << (i + 4)) != 0 {
                 left += a; // NR51 bits 7-4 route channels to the left
@@ -578,6 +596,46 @@ mod tests {
             }
         }
         assert!(saw_high && saw_low);
+    }
+
+    #[test]
+    fn test_channel_mute_toggle() {
+        let mut apu = Apu::new();
+        assert!(!apu.is_muted(0));
+        apu.toggle_mute(0);
+        assert!(apu.is_muted(0));
+        apu.toggle_mute(0);
+        assert!(!apu.is_muted(0));
+        apu.toggle_mute(9); // out of range ignored
+        assert!(!apu.is_muted(9));
+    }
+
+    #[test]
+    fn test_mute_removes_channel_from_mix() {
+        let mut apu = Apu::new();
+        apu.write_reg(0xFF26, 0x80); // APU on
+        apu.write_reg(0xFF11, 0x80); // ch1 duty
+        apu.write_reg(0xFF12, 0xF0); // ch1 envelope: max volume
+        apu.write_reg(0xFF13, 0x00);
+        apu.write_reg(0xFF14, 0x87); // trigger ch1
+        apu.write_reg(0xFF25, 0xFF); // pan all channels both sides
+        apu.write_reg(0xFF24, 0x77); // full master volume
+
+        // Advance to a moment ch1 is outputting (only ch1 is active).
+        let mut nonzero = false;
+        for _ in 0..100 {
+            apu.step(64);
+            let (l, r) = apu.mix_stereo();
+            if l > 0.0 || r > 0.0 {
+                nonzero = true;
+                break;
+            }
+        }
+        assert!(nonzero, "ch1 should produce output");
+
+        // Muting ch1 (the only active channel) drops the mix to silence.
+        apu.toggle_mute(0);
+        assert_eq!(apu.mix_stereo(), (0.0, 0.0));
     }
 
     #[test]

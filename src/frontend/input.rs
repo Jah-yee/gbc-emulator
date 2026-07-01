@@ -28,6 +28,8 @@ pub enum Hotkey {
     FastForward,
     SpeedDown,
     SpeedUp,
+    /// Debug: toggle mute of APU channel 0-3.
+    Mute(u8),
 }
 
 pub struct InputConfig {
@@ -61,6 +63,11 @@ impl Default for InputConfig {
             (Keycode::Space, Hotkey::FastForward),
             (Keycode::Minus, Hotkey::SpeedDown),
             (Keycode::Equals, Hotkey::SpeedUp),
+            // Debug: mute APU channels 1-4.
+            (Keycode::_5, Hotkey::Mute(0)),
+            (Keycode::_6, Hotkey::Mute(1)),
+            (Keycode::_7, Hotkey::Mute(2)),
+            (Keycode::_8, Hotkey::Mute(3)),
         ]);
         Self { game, hotkeys }
     }

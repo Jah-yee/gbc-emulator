@@ -107,6 +107,18 @@ impl App {
             Hotkey::FastForward => self.fast_forward = true,
             Hotkey::SpeedDown => self.speed_mult = (self.speed_mult - 1).max(2),
             Hotkey::SpeedUp => self.speed_mult = (self.speed_mult + 1).min(8),
+            Hotkey::Mute(ch) => {
+                self.cpu.memory.apu.toggle_mute(ch as usize);
+                eprintln!(
+                    "ch{} {}",
+                    ch + 1,
+                    if self.cpu.memory.apu.is_muted(ch as usize) {
+                        "muted"
+                    } else {
+                        "unmuted"
+                    }
+                );
+            }
             Hotkey::LoadRom => self.state = AppState::LoadRom,
             Hotkey::SaveFile => {
                 let path = format!("{}.state", self.rom_path);
