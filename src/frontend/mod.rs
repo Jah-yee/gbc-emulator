@@ -194,8 +194,10 @@ pub fn run(cpu: Cpu, rom_path: String) -> Cpu {
         show_debug: false,
     };
 
-    // Reflect the current/target speed in the title bar, updating only on change.
-    let mut shown: Option<(bool, u32)> = None;
+    // Measure TRUE speed: emulated frames vs wall-clock (GB is 59.7275 fps = 100%),
+    // shown in the title bar and refreshed ~twice a second.
+    let mut frames_since: u32 = 0;
+    let mut last_measure = std::time::Instant::now();
 
     'running: loop {
         for event in event_pump.poll_iter() {
@@ -205,17 +207,15 @@ pub fn run(cpu: Cpu, rom_path: String) -> Cpu {
             break 'running;
         }
 
-        let key = (app.fast_forward, app.speed_mult);
-        if shown != Some(key) {
-            shown = Some(key);
-            let status = if app.fast_forward {
-                format!("{}%", app.speed_mult * 100)
-            } else {
-                format!("FF={}x", app.speed_mult)
-            };
-            let _ = canvas
-                .window_mut()
-                .set_title(&format!("gbc - {} - {}", app.rom_path, status));
+        if last_measure.elapsed().as_millis() >= 500 {
+            let secs = last_measure.elapsed().as_secs_f32();
+            let pct = (frames_since as f32 / secs / 59.7275 * 100.0).round() as u32;
+            let _ = canvas.window_mut().set_title(&format!(
+                "gbc - {} - {}% (FF {}x)",
+                app.rom_path, pct, app.speed_mult
+            ));
+            frames_since = 0;
+            last_measure = std::time::Instant::now();
         }
 
         match app.state {
@@ -239,6 +239,7 @@ pub fn run(cpu: Cpu, rom_path: String) -> Cpu {
                 for _ in 0..n {
                     run_one_frame(&mut app.cpu);
                 }
+                frames_since += n as u32; // for the true-speed measurement
                 let out = &mut app.cpu.memory.apu.output;
                 let samples: Vec<f32> = if n == 1 {
                     out.drain(..).collect()
@@ -295,7 +296,6 @@ pub fn run(cpu: Cpu, rom_path: String) -> Cpu {
                     app.buttons = 0;
                     app.quick_slot = None;
                     let _ = audio_stream.clear();
-                    shown = None; // refresh the title with the new ROM name
                 }
                 app.state = AppState::Playing;
             }
