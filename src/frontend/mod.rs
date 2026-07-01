@@ -34,6 +34,8 @@ struct App {
     should_quit: bool,
     /// In-memory quick save slot (F5 saves, F9 restores).
     quick_slot: Option<Box<Cpu>>,
+    /// True while the fast-forward key is held.
+    fast_forward: bool,
 }
 
 impl App {
@@ -56,6 +58,8 @@ impl App {
             } => {
                 if let Some(pad) = self.input.game(k) {
                     self.set_pad(pad, false);
+                } else if let Some(Hotkey::FastForward) = self.input.hotkey(k) {
+                    self.fast_forward = false;
                 }
             }
             _ => {}
@@ -97,7 +101,8 @@ impl App {
                     eprintln!("quick load");
                 }
             }
-            // load-ROM / file save / fast-forward land in later steps.
+            Hotkey::FastForward => self.fast_forward = true,
+            // load-ROM / file save land in later steps.
             _ => {}
         }
     }
@@ -144,6 +149,7 @@ pub fn run(cpu: Cpu, rom_path: String) -> Cpu {
         buttons: 0,
         should_quit: false,
         quick_slot: None,
+        fast_forward: false,
     };
 
     // Enable alpha blending so the pause overlay can dim the frame.
@@ -161,17 +167,26 @@ pub fn run(cpu: Cpu, rom_path: String) -> Cpu {
             AppState::Playing => {
                 app.cpu.memory.set_joypad(app.dpad, app.buttons);
 
-                // Pace to audio playback: if the stream still has plenty buffered,
-                // wait and loop back (events keep being polled -> stays responsive).
-                if audio_stream.queued_bytes().unwrap_or(0) > 16_384 {
-                    std::thread::sleep(std::time::Duration::from_millis(1));
-                    continue;
+                if app.fast_forward {
+                    // Run several frames unthrottled, discarding their audio so the
+                    // stream doesn't back up, and present only the last frame.
+                    const SPEED: u32 = 4;
+                    for _ in 0..SPEED {
+                        run_one_frame(&mut app.cpu);
+                        app.cpu.memory.apu.output.clear();
+                    }
+                } else {
+                    // Pace to audio playback: if the stream still has plenty
+                    // buffered, wait and loop back (events keep polling -> stays
+                    // responsive).
+                    if audio_stream.queued_bytes().unwrap_or(0) > 16_384 {
+                        std::thread::sleep(std::time::Duration::from_millis(1));
+                        continue;
+                    }
+                    run_one_frame(&mut app.cpu);
+                    let samples: Vec<f32> = app.cpu.memory.apu.output.drain(..).collect();
+                    let _ = audio_stream.put_data_f32(&samples);
                 }
-
-                run_one_frame(&mut app.cpu);
-
-                let samples: Vec<f32> = app.cpu.memory.apu.output.drain(..).collect();
-                let _ = audio_stream.put_data_f32(&samples);
 
                 blit(&app.cpu, &mut texture);
                 canvas.set_draw_color(Color::RGB(0, 0, 0));
