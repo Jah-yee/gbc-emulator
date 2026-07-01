@@ -1932,10 +1932,6 @@ mod tests {
 
 #[cfg(test)]
 mod instruction_tests {
-    use std::fs::copy;
-
-    use crate::cpu;
-
     use super::*;
 
     // Helper function to create a CPU with a program loaded

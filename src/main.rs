@@ -7,173 +7,10 @@ mod memory;
 #[cfg(test)]
 mod blargg_tests;
 
+#[cfg(feature = "gui")]
+mod frontend;
+
 use cpu::Cpu;
-
-/// Paint a teset pattern into VRAM, then load a HALT so the CPU idles
-/// while the PPU keeps rendering on elapsed cycles.
-fn setup_demo(cpu: &mut Cpu) {
-    for row in 0..8u16 {
-        cpu.memory.write_byte(0x8010 + row * 2, 0x3C);
-        cpu.memory.write_byte(0x8011 + row * 2, 0x7E);
-    }
-
-    for i in 0..(32 * 32u16) {
-        cpu.memory.write_byte(0x9800 + i, 0x01);
-    }
-
-    cpu.memory.write_byte(0xFF47, 0xE4); // BGP identity: 11_10_01_00
-
-    let mut rom = vec![0x00; 0x0101];
-    rom[0x0100] = 0x76; // HALT
-    cpu.memory.load_rom(&rom);
-}
-
-/// Run exactly one frame's worth of CPU cycles (70224). Must be cycle-based,
-/// not instruction-based: real instructions take a variable number of cycles,
-/// so a fixed instruction count would make the game speed drift.
-fn run_one_frame(cpu: &mut Cpu) {
-    // One PPU frame is 70224 base cycles; in double-speed the CPU runs twice as
-    // many cycles to produce the same frame.
-    let per_frame = 70224 * if cpu.memory.double_speed { 2 } else { 1 };
-    let target = cpu.cycles + per_frame;
-    while cpu.cycles < target {
-        cpu.step();
-    }
-}
-
-/// Map a key to a joypad button and set/clear its bit. Arrows = D-pad;
-/// Z=A, X=B, Backspace=Select, Return=Start.
-#[cfg(feature = "gui")]
-fn set_key(k: sdl3::keyboard::Keycode, pressed: bool, dpad: &mut u8, buttons: &mut u8) {
-    use sdl3::keyboard::Keycode;
-    let (mask, target): (u8, &mut u8) = match k {
-        Keycode::Right => (0b0001, dpad),
-        Keycode::Left => (0b0010, dpad),
-        Keycode::Up => (0b0100, dpad),
-        Keycode::Down => (0b1000, dpad),
-        Keycode::Z => (0b0001, buttons),         // A
-        Keycode::X => (0b0010, buttons),         // B
-        Keycode::Backspace => (0b0100, buttons), // Select
-        Keycode::Return => (0b1000, buttons),    // Start
-        _ => return,
-    };
-    if pressed {
-        *target |= mask;
-    } else {
-        *target &= !mask;
-    }
-}
-
-///
-#[cfg(feature = "gui")]
-fn run_window(mut cpu: Cpu) -> Cpu {
-    use sdl3::audio::{AudioFormat, AudioSpec};
-    use sdl3::{event::Event, keyboard::Keycode, pixels::PixelFormat};
-
-    const SCALE: u32 = 4;
-
-    let sdl = sdl3::init().unwrap();
-    let video = sdl.video().unwrap();
-
-    let window = video
-        .window("Gameboy Color", 160 * SCALE, 144 * SCALE)
-        .position_centered()
-        .build()
-        .unwrap();
-
-    // No vsync: we pace the loop to the audio stream instead (below), so speed is
-    // correct regardless of the monitor's refresh rate. (SDL3 into_canvas returns
-    // the Canvas directly - no builder.)
-    let mut canvas = window.into_canvas();
-
-    let texture_creator = canvas.texture_creator();
-    let mut texture = texture_creator
-        .create_texture_streaming(PixelFormat::RGB24, 160, 144)
-        .unwrap();
-
-    let mut event_pump = sdl.event_pump().unwrap();
-
-    // Audio: open the default playback device and an f32 stereo stream, and push
-    // the APU's samples into it each frame. (SDL3 replaces SDL2's AudioQueue with
-    // an AudioStream bound to a device.)
-    let audio = sdl.audio().unwrap();
-    let spec = AudioSpec {
-        freq: Some(44_100),
-        channels: Some(2), // interleaved stereo
-        format: Some(AudioFormat::f32_sys()),
-    };
-    let device = audio.open_playback_device(&spec).unwrap();
-    let audio_stream = device.open_device_stream(Some(&spec)).unwrap();
-    audio_stream.resume().unwrap();
-
-    // Joypad press masks (low nibble each, 1 = pressed), updated on key events.
-    let mut dpad = 0u8;
-    let mut buttons = 0u8;
-
-    'running: loop {
-        // drain pending events; quit on window-close or Escape
-        for event in event_pump.poll_iter() {
-            match event {
-                Event::Quit { .. }
-                | Event::KeyDown {
-                    keycode: Some(Keycode::Escape),
-                    ..
-                } => break 'running,
-                // Press D to dump CPU + hardware state to the terminal.
-                Event::KeyDown {
-                    keycode: Some(Keycode::D),
-                    ..
-                } => eprintln!("{}", cpu.debug_state()),
-                Event::KeyDown {
-                    keycode: Some(k), ..
-                } => set_key(k, true, &mut dpad, &mut buttons),
-                Event::KeyUp {
-                    keycode: Some(k), ..
-                } => set_key(k, false, &mut dpad, &mut buttons),
-                _ => {}
-            }
-        }
-        cpu.memory.set_joypad(dpad, buttons);
-
-        // Pace to audio playback: if the sound queue still has plenty buffered,
-        // wait a moment and loop back WITHOUT running a frame. Because we poll
-        // events at the top of every iteration, input stays responsive while we
-        // wait (a blocking sleep here would make the window unresponsive).
-        if audio_stream.queued_bytes().unwrap_or(0) > 16_384 {
-            std::thread::sleep(std::time::Duration::from_millis(1));
-            continue;
-        }
-
-        // advance one frame
-        run_one_frame(&mut cpu);
-
-        // Feed generated audio to the sound card.
-        let samples: Vec<f32> = cpu.memory.apu.output.drain(..).collect();
-        let _ = audio_stream.put_data_f32(&samples);
-
-        // copy framebuffer -> texture (part 3 fills this in)
-        texture
-            .with_lock(None, |buf: &mut [u8], pitch: usize| {
-                for y in 0..144 {
-                    for x in 0..160 {
-                        let (r, g, b) = cpu.framebuffer[y * 160 + x];
-                        let offset = y * pitch + x * 3;
-                        buf[offset] = r;
-                        buf[offset + 1] = g;
-                        buf[offset + 2] = b;
-                    }
-                }
-            })
-            .unwrap();
-
-        // draw the texture to the window, scaled to fill
-        canvas.clear();
-        canvas.copy(&texture, None, None).unwrap();
-        canvas.present();
-    }
-
-    cpu // hand the CPU back so main can persist the save
-}
 
 fn main() {
     let mut cpu = Cpu::new();
@@ -196,7 +33,7 @@ fn main() {
 
     #[cfg(feature = "gui")]
     {
-        cpu = run_window(cpu);
+        cpu = frontend::run(cpu, path.clone());
     }
 
     #[cfg(not(feature = "gui"))]
@@ -229,6 +66,8 @@ fn main() {
     }
 }
 
+/// Zero-dependency headless renderer: dump one frame to the terminal with
+/// truecolor half-blocks. Used when the `gui` feature is off.
 #[cfg(not(feature = "gui"))]
 fn print_frame_ascii(cpu: &Cpu) {
     for y in (0..144).step_by(2) {
@@ -244,5 +83,3 @@ fn print_frame_ascii(cpu: &Cpu) {
         println!("{line}");
     }
 }
-
-
