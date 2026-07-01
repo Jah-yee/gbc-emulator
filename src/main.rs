@@ -28,9 +28,12 @@ fn setup_demo(cpu: &mut Cpu) {
     cpu.memory.load_rom(&rom);
 }
 
-/// Run roughly one frame *~70224 cycles; halted steps are 4 cycles each
+/// Run exactly one frame's worth of CPU cycles (70224). Must be cycle-based,
+/// not instruction-based: real instructions take a variable number of cycles,
+/// so a fixed instruction count would make the game speed drift.
 fn run_one_frame(cpu: &mut Cpu) {
-    for _ in 0..17556 {
+    let target = cpu.cycles + 70224;
+    while cpu.cycles < target {
         cpu.step();
     }
 }
@@ -75,8 +78,9 @@ fn run_window(mut cpu: Cpu) -> Cpu {
         .build()
         .unwrap();
 
-    // present_vsync paces the loop to the monitor's refresh (~60fps)
-    let mut canvas = window.into_canvas().present_vsync().build().unwrap();
+    // No vsync: we pace the loop to the audio queue instead (below), so speed is
+    // correct regardless of the monitor's refresh rate.
+    let mut canvas = window.into_canvas().build().unwrap();
 
     let texture_creator = canvas.texture_creator();
     let mut texture = texture_creator
@@ -127,11 +131,13 @@ fn run_window(mut cpu: Cpu) -> Cpu {
         // advance one frame
         run_one_frame(&mut cpu);
 
-        // Feed generated audio to the sound card. Drop batches if the queue is
-        // already ahead (>~0.1s) to keep latency bounded (proper A/V sync later).
+        // Feed generated audio to the sound card, then pace the emulator to
+        // playback: if we're running ahead, wait for the queue to drain. This
+        // keeps real speed on any monitor and stops the stream over/underrunning.
         let samples: Vec<f32> = cpu.memory.apu.output.drain(..).collect();
-        if audio_queue.size() < 16_384 {
-            let _ = audio_queue.queue_audio(&samples);
+        let _ = audio_queue.queue_audio(&samples);
+        while audio_queue.size() > 8192 {
+            std::thread::sleep(std::time::Duration::from_millis(1));
         }
 
         // copy framebuffer -> texture (part 3 fills this in)
