@@ -5,15 +5,21 @@
 // SDL handles live as locals in `run()` (not in `App`) so the streaming texture
 // can borrow the texture-creator without a self-referential struct.
 
+mod input;
+
 use crate::cpu::Cpu;
+use input::{Hotkey, InputConfig, Pad};
 use sdl3::audio::{AudioFormat, AudioSpec};
-use sdl3::{event::Event, keyboard::Keycode, pixels::PixelFormat};
+use sdl3::pixels::{Color, PixelFormat};
+use sdl3::render::BlendMode;
+use sdl3::event::Event;
 
 const SCALE: u32 = 4;
 
 /// What the frontend is currently doing.
 enum AppState {
     Playing,
+    Paused,
 }
 
 /// Frontend + emulator state (no SDL handles - those live in `run()`).
@@ -22,6 +28,7 @@ struct App {
     state: AppState,
     #[allow(dead_code)] // used by load-ROM / save-state in later steps
     rom_path: String,
+    input: InputConfig,
     dpad: u8,
     buttons: u8,
     should_quit: bool,
@@ -30,22 +37,55 @@ struct App {
 impl App {
     fn handle_event(&mut self, event: Event) {
         match event {
-            Event::Quit { .. }
-            | Event::KeyDown {
-                keycode: Some(Keycode::Escape),
-                ..
-            } => self.should_quit = true,
-            // Press D to dump CPU + hardware state to the terminal.
+            Event::Quit { .. } => self.should_quit = true,
             Event::KeyDown {
-                keycode: Some(Keycode::D),
+                keycode: Some(k),
+                repeat,
                 ..
-            } => eprintln!("{}", self.cpu.debug_state()),
-            Event::KeyDown {
-                keycode: Some(k), ..
-            } => set_key(k, true, &mut self.dpad, &mut self.buttons),
+            } => {
+                if let Some(pad) = self.input.game(k) {
+                    self.set_pad(pad, true);
+                } else if let Some(hk) = self.input.hotkey(k) {
+                    self.handle_hotkey(hk, repeat);
+                }
+            }
             Event::KeyUp {
                 keycode: Some(k), ..
-            } => set_key(k, false, &mut self.dpad, &mut self.buttons),
+            } => {
+                if let Some(pad) = self.input.game(k) {
+                    self.set_pad(pad, false);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn set_pad(&mut self, pad: Pad, pressed: bool) {
+        let (target, mask) = match pad {
+            Pad::Dpad(m) => (&mut self.dpad, m),
+            Pad::Btn(m) => (&mut self.buttons, m),
+        };
+        if pressed {
+            *target |= mask;
+        } else {
+            *target &= !mask;
+        }
+    }
+
+    fn handle_hotkey(&mut self, hk: Hotkey, repeat: bool) {
+        if repeat {
+            return; // ignore key auto-repeat for edge-triggered hotkeys
+        }
+        match hk {
+            Hotkey::Quit => self.should_quit = true,
+            Hotkey::Debug => eprintln!("{}", self.cpu.debug_state()),
+            Hotkey::Pause => {
+                self.state = match self.state {
+                    AppState::Playing => AppState::Paused,
+                    AppState::Paused => AppState::Playing,
+                };
+            }
+            // save states / load-ROM / fast-forward land in later steps.
             _ => {}
         }
     }
@@ -87,10 +127,14 @@ pub fn run(cpu: Cpu, rom_path: String) -> Cpu {
         cpu,
         state: AppState::Playing,
         rom_path,
+        input: InputConfig::default(),
         dpad: 0,
         buttons: 0,
         should_quit: false,
     };
+
+    // Enable alpha blending so the pause overlay can dim the frame.
+    canvas.set_blend_mode(BlendMode::Blend);
 
     'running: loop {
         for event in event_pump.poll_iter() {
@@ -117,9 +161,22 @@ pub fn run(cpu: Cpu, rom_path: String) -> Cpu {
                 let _ = audio_stream.put_data_f32(&samples);
 
                 blit(&app.cpu, &mut texture);
+                canvas.set_draw_color(Color::RGB(0, 0, 0));
                 canvas.clear();
                 canvas.copy(&texture, None, None).unwrap();
                 canvas.present();
+            }
+            AppState::Paused => {
+                // Don't step the CPU. Re-present the last frame with a dim overlay.
+                // Events are still polled at the top of the loop, so P (unpause) and
+                // window-close stay responsive; sleep keeps this from busy-spinning.
+                canvas.set_draw_color(Color::RGB(0, 0, 0));
+                canvas.clear();
+                canvas.copy(&texture, None, None).unwrap();
+                canvas.set_draw_color(Color::RGBA(0, 0, 0, 128));
+                let _ = canvas.fill_rect(None);
+                canvas.present();
+                std::thread::sleep(std::time::Duration::from_millis(16));
             }
         }
     }
@@ -153,23 +210,3 @@ fn run_one_frame(cpu: &mut Cpu) {
     }
 }
 
-/// Map a key to a joypad button and set/clear its bit. Arrows = D-pad;
-/// Z=A, X=B, Backspace=Select, Return=Start.
-fn set_key(k: Keycode, pressed: bool, dpad: &mut u8, buttons: &mut u8) {
-    let (mask, target): (u8, &mut u8) = match k {
-        Keycode::Right => (0b0001, dpad),
-        Keycode::Left => (0b0010, dpad),
-        Keycode::Up => (0b0100, dpad),
-        Keycode::Down => (0b1000, dpad),
-        Keycode::Z => (0b0001, buttons),         // A
-        Keycode::X => (0b0010, buttons),         // B
-        Keycode::Backspace => (0b0100, buttons), // Select
-        Keycode::Return => (0b1000, buttons),    // Start
-        _ => return,
-    };
-    if pressed {
-        *target |= mask;
-    } else {
-        *target &= !mask;
-    }
-}
