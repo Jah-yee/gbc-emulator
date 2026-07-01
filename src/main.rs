@@ -93,7 +93,7 @@ fn run_window(mut cpu: Cpu) -> Cpu {
     let audio = sdl.audio().unwrap();
     let desired = AudioSpecDesired {
         freq: Some(44_100),
-        channels: Some(1),
+        channels: Some(2), // interleaved stereo
         samples: Some(2048),
     };
     let audio_queue: AudioQueue<f32> = audio.open_queue(None, &desired).unwrap();
@@ -132,7 +132,7 @@ fn run_window(mut cpu: Cpu) -> Cpu {
         // wait a moment and loop back WITHOUT running a frame. Because we poll
         // events at the top of every iteration, input stays responsive while we
         // wait (a blocking sleep here would make the window unresponsive).
-        if audio_queue.size() > 8192 {
+        if audio_queue.size() > 16_384 {
             std::thread::sleep(std::time::Duration::from_millis(1));
             continue;
         }

@@ -369,13 +369,25 @@ pub struct Apu {
     ch4: Noise,
 
     enabled: bool, // NR52 bit 7 master enable
+    nr50: u8,      // master volume (+ VIN, unused): bits 6-4 left, 2-0 right
+    nr51: u8,      // panning: bits 7-4 = channels to LEFT, 3-0 = channels to RIGHT
 
     fs_timer: u32,
     fs_step: u8,
 
     sample_clock: f32,
-    /// Generated mono samples in [-1.0, 1.0], drained by the frontend.
+    hpf_l: f32, // high-pass filter capacitors (remove DC offset -> no pops/fuzz)
+    hpf_r: f32,
+    /// Generated interleaved stereo samples (L, R, L, R, ...), drained by the frontend.
     pub output: Vec<f32>,
+}
+
+/// One-pole high-pass filter: removes the DC offset so silence sits at 0 and
+/// channel toggles don't click. `charge` ~ 0.999958^95 for a 44.1kHz sample.
+fn high_pass(cap: &mut f32, sample: f32) -> f32 {
+    let out = sample - *cap;
+    *cap = sample - out * 0.996;
+    out
 }
 
 impl Apu {
@@ -386,9 +398,13 @@ impl Apu {
             ch3: Wave::default(),
             ch4: Noise::default(),
             enabled: true,
+            nr50: 0x77, // full volume both sides (post-boot default)
+            nr51: 0xFF, // all channels to both sides
             fs_timer: 0,
             fs_step: 0,
             sample_clock: 0.0,
+            hpf_l: 0.0,
+            hpf_r: 0.0,
             output: Vec::new(),
         }
     }
@@ -450,6 +466,8 @@ impl Apu {
             0xFF22 => self.ch4.write_nr43(value),
             0xFF23 => self.ch4.write_nr44(value),
 
+            0xFF24 => self.nr50 = value,
+            0xFF25 => self.nr51 = value,
             0xFF26 => self.enabled = value & 0x80 != 0,
             _ => {}
         }
@@ -493,20 +511,42 @@ impl Apu {
         self.sample_clock += cycles as f32;
         while self.sample_clock >= CYCLES_PER_SAMPLE {
             self.sample_clock -= CYCLES_PER_SAMPLE;
-            self.output.push(self.mix());
+            let (l, r) = self.mix_stereo();
+            let l = high_pass(&mut self.hpf_l, l);
+            let r = high_pass(&mut self.hpf_r, r);
+            self.output.push(l);
+            self.output.push(r);
         }
     }
 
-    /// Sum all four channels (each 0..15) into one [0.0, 1.0] sample. Silence
-    /// is 0.0 (no DC offset). Panning/master volume come in chunk 3.
-    fn mix(&self) -> f32 {
+    /// Mix the four channels into a stereo pair, honoring NR51 panning and NR50
+    /// master volume. Each side is roughly [0.0, 1.0] before the high-pass filter
+    /// re-centers it around 0.
+    fn mix_stereo(&self) -> (f32, f32) {
         if !self.enabled {
-            return 0.0;
+            return (0.0, 0.0);
         }
-        let sum =
-            self.ch1.sample() as f32 + self.ch2.sample() as f32 + self.ch3.sample() as f32
-                + self.ch4.sample() as f32;
-        sum / 60.0 // 4 channels x 15 = 60 -> 1.0 max
+        let samples = [
+            self.ch1.sample(),
+            self.ch2.sample(),
+            self.ch3.sample(),
+            self.ch4.sample(),
+        ];
+        let mut left = 0.0f32;
+        let mut right = 0.0f32;
+        for (i, &s) in samples.iter().enumerate() {
+            let a = s as f32 / 15.0; // 0.0..1.0
+            if self.nr51 & (1 << (i + 4)) != 0 {
+                left += a; // NR51 bits 7-4 route channels to the left
+            }
+            if self.nr51 & (1 << i) != 0 {
+                right += a; // NR51 bits 3-0 route channels to the right
+            }
+        }
+        // Master volume 0-7 per side -> scale (vol+1)/8; /4 normalizes 4 channels.
+        let lvol = (((self.nr50 >> 4) & 0x07) as f32 + 1.0) / 8.0;
+        let rvol = ((self.nr50 & 0x07) as f32 + 1.0) / 8.0;
+        (left / 4.0 * lvol, right / 4.0 * rvol)
     }
 }
 
@@ -594,6 +634,7 @@ mod tests {
         apu.write_reg(0xFF17, 0xF0);
         apu.write_reg(0xFF19, 0x87);
         apu.step(10_000);
-        assert!(apu.output.len() > 90 && apu.output.len() < 120);
+        // ~10000/95 ≈ 105 sample points, x2 for interleaved stereo.
+        assert!(apu.output.len() > 180 && apu.output.len() < 240);
     }
 }
