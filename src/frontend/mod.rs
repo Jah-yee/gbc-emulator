@@ -6,6 +6,7 @@
 // can borrow the texture-creator without a self-referential struct.
 
 mod input;
+mod overlay;
 
 use crate::cpu::Cpu;
 use input::{Hotkey, InputConfig, Pad};
@@ -39,6 +40,8 @@ struct App {
     fast_forward: bool,
     /// Fast-forward multiplier (frames run per loop while held). Adjustable.
     speed_mult: u32,
+    /// Debug: show the real-time overlay.
+    show_debug: bool,
 }
 
 impl App {
@@ -119,6 +122,7 @@ impl App {
                     }
                 );
             }
+            Hotkey::ToggleOverlay => self.show_debug = !self.show_debug,
             Hotkey::LoadRom => self.state = AppState::LoadRom,
             Hotkey::SaveFile => {
                 let path = format!("{}.state", self.rom_path);
@@ -187,6 +191,7 @@ pub fn run(cpu: Cpu, rom_path: String) -> Cpu {
         quick_slot: None,
         fast_forward: false,
         speed_mult: 4,
+        show_debug: false,
     };
 
     // Enable alpha blending so the pause overlay can dim the frame.
@@ -244,6 +249,10 @@ pub fn run(cpu: Cpu, rom_path: String) -> Cpu {
                 canvas.set_draw_color(Color::RGB(0, 0, 0));
                 canvas.clear();
                 canvas.copy(&texture, None, None).unwrap();
+                if app.show_debug {
+                    let q = audio_stream.queued_bytes().unwrap_or(0);
+                    overlay::draw(&mut canvas, &app.cpu, q);
+                }
                 canvas.present();
             }
             AppState::Paused => {
@@ -255,6 +264,10 @@ pub fn run(cpu: Cpu, rom_path: String) -> Cpu {
                 canvas.copy(&texture, None, None).unwrap();
                 canvas.set_draw_color(Color::RGBA(0, 0, 0, 128));
                 let _ = canvas.fill_rect(None);
+                if app.show_debug {
+                    let q = audio_stream.queued_bytes().unwrap_or(0);
+                    overlay::draw(&mut canvas, &app.cpu, q);
+                }
                 canvas.present();
                 std::thread::sleep(std::time::Duration::from_millis(16));
             }

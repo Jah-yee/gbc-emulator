@@ -429,6 +429,17 @@ impl Apu {
         self.mute.get(ch).copied().unwrap_or(false)
     }
 
+    /// Debug: current normalized (0.0-1.0) output level of each channel (ch1-4),
+    /// for a real-time level meter. Independent of mute so activity stays visible.
+    pub fn channel_levels(&self) -> [f32; 4] {
+        [
+            self.ch1.sample() as f32 / 15.0,
+            self.ch2.sample() as f32 / 15.0,
+            self.ch3.sample() as f32 / 15.0,
+            self.ch4.sample() as f32 / 15.0,
+        ]
+    }
+
     pub fn read_reg(&self, addr: u16) -> u8 {
         match addr {
             // NR52: master enable + per-channel on flags.

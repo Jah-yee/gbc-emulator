@@ -30,6 +30,8 @@ pub enum Hotkey {
     SpeedUp,
     /// Debug: toggle mute of APU channel 0-3.
     Mute(u8),
+    /// Debug: toggle the real-time overlay.
+    ToggleOverlay,
 }
 
 pub struct InputConfig {
@@ -68,6 +70,7 @@ impl Default for InputConfig {
             (Keycode::_6, Hotkey::Mute(1)),
             (Keycode::_7, Hotkey::Mute(2)),
             (Keycode::_8, Hotkey::Mute(3)),
+            (Keycode::Tab, Hotkey::ToggleOverlay),
         ]);
         Self { game, hotkeys }
     }
