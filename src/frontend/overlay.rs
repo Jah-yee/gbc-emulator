@@ -7,8 +7,7 @@
 
 use crate::cpu::Cpu;
 use sdl3::pixels::Color;
-use sdl3::rect::FRect;
-use sdl3::render::Canvas;
+use sdl3::render::{Canvas, FRect};
 use sdl3::video::Window;
 
 // Layout (window pixels). Game fills the left GAME_W x GAME_H; the debug panel
@@ -36,12 +35,12 @@ pub fn draw(canvas: &mut Canvas<Window>, cpu: &Cpu, queued_bytes: i32, pct: u32)
     let lh = 6 * s;
 
     // --- CPU / PPU state ---
-    let r = &cpu.registers;
+    let reg = &cpu.registers;
     let lines = [
         format!("SPD {}%", pct),
         format!("PC {:04X} SP {:04X}", cpu.pc, cpu.sp),
-        format!("AF {:02X}{:02X} BC {:02X}{:02X}", r.a, r.f, r.b, r.c),
-        format!("DE {:02X}{:02X} HL {:02X}{:02X}", r.d, r.e, r.h, r.l),
+        format!("AF {:02X}{:02X} BC {:02X}{:02X}", reg.a, reg.f, reg.b, reg.c),
+        format!("DE {:02X}{:02X} HL {:02X}{:02X}", reg.d, reg.e, reg.h, reg.l),
         format!(
             "LY {:02X} LCDC {:02X}",
             cpu.memory.read_byte(0xFF44),

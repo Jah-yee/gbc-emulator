@@ -12,7 +12,7 @@ use crate::cpu::Cpu;
 use input::{Hotkey, InputConfig, Pad};
 use sdl3::audio::{AudioFormat, AudioSpec};
 use sdl3::pixels::{Color, PixelFormat};
-use sdl3::rect::FRect;
+use sdl3::render::FRect;
 use sdl3::render::BlendMode;
 use sdl3::event::Event;
 
