@@ -20,13 +20,14 @@ const SCALE: u32 = 4;
 enum AppState {
     Playing,
     Paused,
+    /// Transient: prompt for and switch to a new ROM, then back to Playing.
+    LoadRom,
 }
 
 /// Frontend + emulator state (no SDL handles - those live in `run()`).
 struct App {
     cpu: Cpu,
     state: AppState,
-    #[allow(dead_code)] // used by load-ROM / save-state in later steps
     rom_path: String,
     input: InputConfig,
     dpad: u8,
@@ -102,7 +103,8 @@ impl App {
                 }
             }
             Hotkey::FastForward => self.fast_forward = true,
-            // load-ROM / file save land in later steps.
+            Hotkey::LoadRom => self.state = AppState::LoadRom,
+            // file save lands in the next step.
             _ => {}
         }
     }
@@ -206,6 +208,20 @@ pub fn run(cpu: Cpu, rom_path: String) -> Cpu {
                 canvas.present();
                 std::thread::sleep(std::time::Duration::from_millis(16));
             }
+            AppState::LoadRom => {
+                // Persist the current cart's save, then swap in a new ROM. (v1
+                // prompts on the terminal; the window is briefly unresponsive.)
+                persist_sav(&app.cpu, &app.rom_path);
+                if let Some((new_cpu, new_path)) = prompt_and_load() {
+                    app.cpu = new_cpu;
+                    app.rom_path = new_path;
+                    app.dpad = 0;
+                    app.buttons = 0;
+                    app.quick_slot = None;
+                    let _ = audio_stream.clear();
+                }
+                app.state = AppState::Playing;
+            }
         }
     }
 
@@ -236,5 +252,52 @@ fn run_one_frame(cpu: &mut Cpu) {
     while cpu.cycles < target {
         cpu.step();
     }
+}
+
+/// Write the cartridge RAM back to `<rom>.sav` (battery carts only).
+fn persist_sav(cpu: &Cpu, rom_path: &str) {
+    if cpu.memory.has_battery() {
+        let save_path = format!("{rom_path}.sav");
+        if std::fs::write(&save_path, cpu.memory.ram_snapshot()).is_ok() {
+            eprintln!("saved: {save_path}");
+        }
+    }
+}
+
+/// Prompt on the terminal for a ROM path and build a fresh Cpu for it (applying
+/// the CGB boot flag and loading its battery save). Returns None on empty input
+/// or a read error.
+fn prompt_and_load() -> Option<(Cpu, String)> {
+    use std::io::Write;
+    eprint!("load ROM path: ");
+    let _ = std::io::stderr().flush();
+
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line).ok()?;
+    let path = line.trim();
+    if path.is_empty() {
+        return None;
+    }
+
+    let rom = match std::fs::read(path) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("load failed: {e}");
+            return None;
+        }
+    };
+
+    let mut cpu = Cpu::new();
+    cpu.memory.load_rom(&rom);
+    if cpu.memory.is_cgb() {
+        cpu.registers.a = 0x11;
+    }
+    let save_path = format!("{path}.sav");
+    if let Ok(data) = std::fs::read(&save_path) {
+        cpu.memory.load_ram(&data);
+        eprintln!("loaded save: {save_path}");
+    }
+
+    Some((cpu, path.to_string()))
 }
 
