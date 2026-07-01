@@ -7,7 +7,7 @@
 
 use crate::cpu::Cpu;
 use sdl3::pixels::Color;
-use sdl3::render::{Canvas, FRect};
+use sdl3::render::{Canvas, FRect, Texture};
 use sdl3::video::Window;
 
 // Layout (window pixels). Game fills the left GAME_W x GAME_H; the debug panel
@@ -23,7 +23,17 @@ fn r(x: i32, y: i32, w: i32, h: i32) -> FRect {
 
 /// Draw the docked debug panel to the right of the game. `queued_bytes` is the
 /// audio backlog; `pct` is the measured emulation speed.
-pub fn draw(canvas: &mut Canvas<Window>, cpu: &Cpu, queued_bytes: i32, pct: u32) {
+/// The tile sheet texture is 16x24 tiles of 8x8 = 128x192 px.
+pub const TILE_TEX_W: u32 = 128;
+pub const TILE_TEX_H: u32 = 192;
+
+pub fn draw(
+    canvas: &mut Canvas<Window>,
+    cpu: &Cpu,
+    queued_bytes: i32,
+    pct: u32,
+    tile_tex: &mut Texture,
+) {
     let px = GAME_W; // panel left edge
     canvas.set_draw_color(Color::RGB(16, 16, 20));
     let _ = canvas.fill_rect(r(px, 0, PANEL_W, GAME_H));
@@ -71,7 +81,7 @@ pub fn draw(canvas: &mut Canvas<Window>, cpu: &Cpu, queued_bytes: i32, pct: u32)
     let levels = cpu.memory.apu.channel_levels();
     let bw = 30i32;
     let gap = 18i32;
-    let mh = 80i32;
+    let mh = 56i32;
     for (i, &lvl) in levels.iter().enumerate() {
         let bx = x0 + i as i32 * (bw + gap);
         canvas.set_draw_color(Color::RGB(40, 40, 40));
@@ -88,6 +98,39 @@ pub fn draw(canvas: &mut Canvas<Window>, cpu: &Cpu, queued_bytes: i32, pct: u32)
 
         draw_text(canvas, bx + bw / 2 - 3, y + mh + 4, 2, &format!("{}", i + 1), white);
     }
+
+    // --- VRAM tile viewer (384 tiles at 0x8000, bank 0) ---
+    y += mh + 18;
+    draw_text(canvas, x0, y, 2, "VRAM TILES", dim);
+    y += 6 * 2 + 4;
+
+    tile_tex
+        .with_lock(None, |buf: &mut [u8], pitch: usize| {
+            for t in 0..384usize {
+                let tx = (t % 16) * 8; // 16 tiles per row
+                let ty = (t / 16) * 8;
+                let base = 0x8000 + (t * 16) as u16;
+                for row in 0..8u16 {
+                    let lo = cpu.memory.vram_read(0, base + row * 2);
+                    let hi = cpu.memory.vram_read(0, base + row * 2 + 1);
+                    for col in 0..8 {
+                        let bit = 7 - col;
+                        let id = (((hi >> bit) & 1) << 1) | ((lo >> bit) & 1);
+                        let v = [255u8, 170, 85, 0][id as usize]; // 2bpp -> grayscale
+                        let off = (ty + row as usize) * pitch + (tx + col) * 3;
+                        buf[off] = v;
+                        buf[off + 1] = v;
+                        buf[off + 2] = v;
+                    }
+                }
+            }
+        })
+        .unwrap();
+
+    // Blit the sheet, keeping aspect and filling the remaining panel height.
+    let avail = (GAME_H - y - 6).max(0) as f32;
+    let sheet_w = avail * TILE_TEX_W as f32 / TILE_TEX_H as f32;
+    let _ = canvas.copy(tile_tex, None, FRect::new(x0 as f32, y as f32, sheet_w, avail));
 }
 
 /// Render an uppercase/hex string with the embedded 3x5 font at `scale`x.

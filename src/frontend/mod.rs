@@ -167,6 +167,10 @@ pub fn run(cpu: Cpu, rom_path: String) -> Cpu {
     let mut texture = texture_creator
         .create_texture_streaming(PixelFormat::RGB24, 160, 144)
         .unwrap();
+    // Debug: VRAM tile-sheet texture, updated from VRAM when the panel is shown.
+    let mut tile_tex = texture_creator
+        .create_texture_streaming(PixelFormat::RGB24, overlay::TILE_TEX_W, overlay::TILE_TEX_H)
+        .unwrap();
 
     let mut event_pump = sdl.event_pump().unwrap();
 
@@ -277,7 +281,7 @@ pub fn run(cpu: Cpu, rom_path: String) -> Cpu {
                 canvas.copy(&texture, None, game_rect(app.show_debug)).unwrap();
                 if app.show_debug {
                     let q = audio_stream.queued_bytes().unwrap_or(0);
-                    overlay::draw(&mut canvas, &app.cpu, q, measured_pct);
+                    overlay::draw(&mut canvas, &app.cpu, q, measured_pct, &mut tile_tex);
                 }
                 canvas.present();
             }
@@ -297,7 +301,7 @@ pub fn run(cpu: Cpu, rom_path: String) -> Cpu {
                 canvas.set_blend_mode(BlendMode::None);
                 if app.show_debug {
                     let q = audio_stream.queued_bytes().unwrap_or(0);
-                    overlay::draw(&mut canvas, &app.cpu, q, measured_pct);
+                    overlay::draw(&mut canvas, &app.cpu, q, measured_pct, &mut tile_tex);
                 }
                 canvas.present();
                 std::thread::sleep(std::time::Duration::from_millis(16));
