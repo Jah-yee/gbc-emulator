@@ -346,19 +346,23 @@ impl Cpu {
         while self.ppu_dots >= 456 {
             self.ppu_dots -= 456;
 
-            // 3. read LY, compute the next scanline (wrap 153 -> 0), write it back
+            // 3. advance to the next scanline (wrap 153 -> 0)
             let ly = self.memory.read_byte(0xFF44);
-
-            if ly < 144 {
-                self.render_scanline(ly);
-                self.render_sprites(ly);
-            }
             let next_ly = if ly >= 153 { 0 } else { ly + 1 };
             self.memory.write_byte(0xFF44, next_ly);
 
             // 4. start of VBlank -> request the VBlank interrupt
             if next_ly == 144 {
                 self.request_interrupt(0);
+            }
+
+            // 5. Render the line that is now STARTING, using registers as they
+            // stand at its start (i.e. after the previous line's HBlank handler).
+            // This is what makes per-line raster effects (split-screen status
+            // bars, parallax via HBlank SCX changes) land on the correct line.
+            if next_ly < 144 {
+                self.render_scanline(next_ly);
+                self.render_sprites(next_ly);
             }
         }
         self.update_stat();
@@ -2841,7 +2845,10 @@ mod instruction_tests {
         cpu.memory.write_byte(0xFF40, 0b1001_0001); // LCDC: LCD on + unsigned data + BG enable
         cpu.memory.write_byte(0xFF47, 0xE4); // identity palette
 
-        cpu.step_ppu(456); // complete scanline 0 -> renders it, LY -> 1 
+        // Lines render at their START. Start at LY 153 so completing it rolls into
+        // line 0, which then renders.
+        cpu.memory.write_byte(0xFF44, 153);
+        cpu.step_ppu(456);
 
         assert_eq!(&cpu.framebuffer[0..8], &[0u8, 2, 3, 3, 3, 3, 2, 0].map(dmg_rgb));
     }
