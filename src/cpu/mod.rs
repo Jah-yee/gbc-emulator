@@ -196,6 +196,11 @@ pub struct Cpu {
     pub tima_counter: u32, // accumulates cycles for TIMA
     pub ppu_dots: u32,     // accumulates cycles within the current scanline
     pub framebuffer: [(u8, u8, u8); 160 * 144], // RGB per pixel
+    // Per-scanline BG info for sprite priority: the BG/window color id (0-3) and
+    // whether that pixel had CGB BG-priority. Filled by render_scanline, read by
+    // render_sprites.
+    bg_color: [u8; 160],
+    bg_prio: [bool; 160],
     pub trace: bool,       // Gameboy Doctor trace mode (GBC_TRACE env var)
 }
 
@@ -213,6 +218,8 @@ impl Cpu {
             tima_counter: 0,
             ppu_dots: 0,
             framebuffer: [(224, 248, 208); 160 * 144], // DMG blank = lightest green
+            bg_color: [0; 160],
+            bg_prio: [false; 160],
             trace: std::env::var("GBC_TRACE").is_ok(),
         }
     }
@@ -415,9 +422,10 @@ impl Cpu {
         decode_tile_row(low, high)[(px_x % 8) as usize]
     }
 
-    /// CGB version: returns the final RGB for a BG/window pixel, honoring the
-    /// per-tile attribute byte in VRAM bank 1 (palette, tile bank, X/Y flip).
-    fn cgb_tile_pixel(&self, map_base: u16, px_x: u16, px_y: u16, lcdc: u8) -> (u8, u8, u8) {
+    /// CGB version: returns (rgb, color_id, bg_priority) for a BG/window pixel,
+    /// honoring the per-tile attribute byte in VRAM bank 1 (palette, tile bank,
+    /// X/Y flip, priority). color_id and priority feed sprite priority.
+    fn cgb_tile_pixel(&self, map_base: u16, px_x: u16, px_y: u16, lcdc: u8) -> ((u8, u8, u8), u8, bool) {
         let tile_col = (px_x / 8) & 31;
         let tile_row = (px_y / 8) & 31;
         let map_addr = map_base + tile_row * 32 + tile_col;
@@ -428,6 +436,7 @@ impl Cpu {
         let tile_bank = ((attr >> 3) & 1) as usize;
         let x_flip = attr & 0x20 != 0;
         let y_flip = attr & 0x40 != 0;
+        let priority = attr & 0x80 != 0;
 
         let tile_addr: u16 = if lcdc & 0x10 != 0 {
             0x8000 + (tile_id as u16) * 16
@@ -447,8 +456,8 @@ impl Cpu {
         if x_flip {
             col = 7 - col;
         }
-        let color = decode_tile_row(low, high)[col] as usize;
-        self.memory.cgb_bg_color(palette, color)
+        let color = decode_tile_row(low, high)[col];
+        (self.memory.cgb_bg_color(palette, color as usize), color, priority)
     }
 
     /// Render one scanline (background + window) into the framebuffer.
@@ -462,6 +471,8 @@ impl Cpu {
         if !cgb && lcdc & 0x01 == 0 {
             for x in 0..160usize {
                 self.framebuffer[ly as usize * 160 + x] = dmg_rgb(0);
+                self.bg_color[x] = 0;
+                self.bg_prio[x] = false;
             }
             return;
         }
@@ -491,11 +502,14 @@ impl Cpu {
                 )
             };
 
-            let rgb = if cgb {
+            let (rgb, color_id, prio) = if cgb {
                 self.cgb_tile_pixel(map, mx, my, lcdc)
             } else {
-                dmg_rgb(apply_palette(bgp, self.tile_pixel(map, mx, my, lcdc)))
+                let c = self.tile_pixel(map, mx, my, lcdc);
+                (dmg_rgb(apply_palette(bgp, c)), c, false)
             };
+            self.bg_color[x as usize] = color_id;
+            self.bg_prio[x as usize] = prio;
             self.framebuffer[ly as usize * 160 + x as usize] = rgb;
         }
     }
@@ -557,6 +571,19 @@ impl Cpu {
                 if !(0..160).contains(&screen_x) {
                     continue; // off-screen horizontally
                 }
+
+                // Priority: the BG covers this sprite pixel when the BG pixel is
+                // opaque (color 1-3) AND either this sprite is flagged "behind BG"
+                // or the BG tile has CGB priority. In CGB, LCDC bit 0 clear
+                // disables BG priority (sprites always win).
+                let bg_c = self.bg_color[screen_x as usize];
+                let bg_wins = bg_c != 0
+                    && (flags & 0x80 != 0 || self.bg_prio[screen_x as usize])
+                    && (!cgb || lcdc & 0x01 != 0);
+                if bg_wins {
+                    continue;
+                }
+
                 let rgb = if cgb {
                     // CGB: flag bits 0-2 select one of 8 OBJ palettes.
                     self.memory.cgb_obj_color((flags & 0x07) as usize, color as usize)
@@ -2777,6 +2804,37 @@ mod instruction_tests {
         assert!(s.contains("SP:FFFE"), "debug_state was: {s}");
         // Post-boot LCDC default we seed in Memory::new.
         assert!(s.contains("LCDC:91"), "debug_state was: {s}");
+    }
+
+    #[test]
+    fn test_sprite_behind_bg_priority() {
+        let mut cpu = setup_cpu(vec![]);
+        // BG tile 1 = solid color 1 (low=0xFF, high=0x00).
+        cpu.memory.write_byte(0x8010, 0xFF);
+        cpu.memory.write_byte(0x8011, 0x00);
+        cpu.memory.write_byte(0x9800, 0x01);
+        // Sprite tile 2 = solid color 3, placed at screen (0,0), flagged behind BG.
+        cpu.memory.write_byte(0x8020, 0xFF);
+        cpu.memory.write_byte(0x8021, 0xFF);
+        cpu.memory.write_byte(0xFE00, 16); // Y -> screen 0
+        cpu.memory.write_byte(0xFE01, 8); // X -> screen 0
+        cpu.memory.write_byte(0xFE02, 2); // tile 2
+        cpu.memory.write_byte(0xFE03, 0x80); // behind-BG priority
+        cpu.memory.write_byte(0xFF47, 0xE4);
+        cpu.memory.write_byte(0xFF48, 0xE4);
+        cpu.memory.write_byte(0xFF40, 0b1001_0011); // LCD + unsigned data + sprites + BG on
+
+        cpu.render_scanline(0);
+        let bg_pixel = cpu.framebuffer[0]; // BG color 1
+        cpu.render_sprites(0);
+        // BG is opaque and the sprite is behind it -> the BG pixel is preserved.
+        assert_eq!(cpu.framebuffer[0], bg_pixel);
+
+        // Now clear the behind-BG flag: the sprite (color 3) should win.
+        cpu.memory.write_byte(0xFE03, 0x00);
+        cpu.render_scanline(0);
+        cpu.render_sprites(0);
+        assert_ne!(cpu.framebuffer[0], bg_pixel);
     }
 
     #[test]
