@@ -8,8 +8,8 @@ pub struct Memory {
     // (bank 0 is always fixed at 0x0000-0x3FFF). The MBC changes this.
     rom_bank: usize,
 
-    // Video RAM
-    vram: [u8; 0x2000],
+    // Video RAM (CGB has 2 banks; DMG uses only bank 0)
+    vram: [u8; 0x4000],
 
     // External RAM (Cartridge RAM)
     external_ram: [u8; 0x8000], // up to 4 x 8KB cartridge RAM banks
@@ -46,6 +46,14 @@ pub struct Memory {
     cart_type: u8,     // header byte 0x0147 (0x00 = ROM only, 0x01-0x03 = MBC1, 0x0F-0x13 = MBC3)
     ram_enabled: bool, // cartridge RAM gate (set via 0x0000-0x1FFF writes)
     ram_bank: usize,   // which 8KB cartridge-RAM bank is mapped at 0xA000
+
+    // CGB (Game Boy Color) state.
+    cgb_mode: bool,        // cartridge supports CGB (header 0x0143 bit 7)
+    vram_bank: usize,      // 0xFF4F VBK: which 8KB VRAM bank is mapped at 0x8000
+    bg_palette: [u8; 64],  // CGB BG palette RAM: 8 palettes x 4 colors x 2 bytes (RGB555)
+    obj_palette: [u8; 64], // CGB sprite palette RAM
+    bcps: u8,              // 0xFF68: BG palette index (bits 0-5) + auto-increment (bit 7)
+    ocps: u8,              // 0xFF6A: OBJ palette index + auto-increment
 }
 
 impl Memory {
@@ -53,7 +61,7 @@ impl Memory {
         let mut memory = Self {
             rom: Vec::new(),
             rom_bank: 1,
-            vram: [0; 0x2000],
+            vram: [0; 0x4000],
             external_ram: [0; 0x8000],
             wram: [0; 0x2000],
             oam: [0; 0xA0],
@@ -68,6 +76,12 @@ impl Memory {
             cart_type: 0,
             ram_enabled: false,
             ram_bank: 0,
+            cgb_mode: false,
+            vram_bank: 0,
+            bg_palette: [0; 64],
+            obj_palette: [0; 64],
+            bcps: 0,
+            ocps: 0,
         };
         // Post-boot register defaults (values the boot ROM leaves behind). Games
         // like Tetris rely on these instead of setting them, so without them the
@@ -96,7 +110,7 @@ impl Memory {
             }
 
             // VRAM
-            0x8000..=0x9FFF => self.vram[(address - 0x8000) as usize],
+            0x8000..=0x9FFF => self.vram[self.vram_bank * 0x2000 + (address - 0x8000) as usize],
 
             // External (cartridge) RAM - only accessible while enabled.
             0xA000..=0xBFFF => {
@@ -132,6 +146,16 @@ impl Memory {
                 }
                 0xC0 | self.joypad_select | low
             }
+
+            // CGB: VRAM bank register (unused bits read as 1).
+            0xFF4F => 0xFE | self.vram_bank as u8,
+
+            // CGB palette registers: index registers read back directly, data
+            // registers read the palette-RAM byte at the current index.
+            0xFF68 => self.bcps,
+            0xFF69 => self.bg_palette[(self.bcps & 0x3F) as usize],
+            0xFF6A => self.ocps,
+            0xFF6B => self.obj_palette[(self.ocps & 0x3F) as usize],
 
             // I/O Registers
             0xFF00..=0xFF7F => self.io_registers[(address - 0xFF00) as usize],
@@ -202,7 +226,9 @@ impl Memory {
             },
 
             // VRAM
-            0x8000..=0x9FFF => self.vram[(address - 0x8000) as usize] = value,
+            0x8000..=0x9FFF => {
+                self.vram[self.vram_bank * 0x2000 + (address - 0x8000) as usize] = value
+            }
 
             // External RAM
             0xA000..=0xBFFF => {
@@ -239,6 +265,27 @@ impl Memory {
                     self.write_byte(0xFE00 + i, byte);
                 }
                 self.io_registers[0x46] = value; // keep the register readable
+            }
+
+            // CGB: select the VRAM bank (bit 0).
+            0xFF4F => self.vram_bank = value as usize & 1,
+
+            // CGB BG palette: 0xFF68 sets the index (+auto-increment bit), 0xFF69
+            // writes the color byte at that index (and bumps the index if enabled).
+            0xFF68 => self.bcps = value,
+            0xFF69 => {
+                self.bg_palette[(self.bcps & 0x3F) as usize] = value;
+                if self.bcps & 0x80 != 0 {
+                    self.bcps = (self.bcps & 0x80) | (self.bcps.wrapping_add(1) & 0x3F);
+                }
+            }
+            // CGB OBJ (sprite) palette: same scheme via 0xFF6A/0xFF6B.
+            0xFF6A => self.ocps = value,
+            0xFF6B => {
+                self.obj_palette[(self.ocps & 0x3F) as usize] = value;
+                if self.ocps & 0x80 != 0 {
+                    self.ocps = (self.ocps & 0x80) | (self.ocps.wrapping_add(1) & 0x3F);
+                }
             }
 
             // I/O Registers
@@ -285,9 +332,16 @@ impl Memory {
         self.rom = rom.to_vec();
         // Cartridge type lives in the header at 0x0147.
         self.cart_type = self.rom.get(0x0147).copied().unwrap_or(0);
+        // CGB support flag: header 0x0143 bit 7 (0x80 = CGB-enhanced, 0xC0 = CGB-only).
+        self.cgb_mode = self.rom.get(0x0143).copied().unwrap_or(0) & 0x80 != 0;
         self.rom_bank = 1;
         self.ram_bank = 0;
         self.ram_enabled = false;
+    }
+
+    /// True if the cartridge declares Game Boy Color support (header 0x0143).
+    pub fn is_cgb(&self) -> bool {
+        self.cgb_mode
     }
 
     /// True if the cartridge has battery-backed RAM (its save persists).
@@ -527,6 +581,32 @@ mod tests {
         // Disable again: data is retained but gated off (reads 0xFF).
         memory.write_byte(0x0000, 0x00);
         assert_eq!(memory.read_byte(0xA000), 0xFF);
+    }
+
+    #[test]
+    fn test_vram_banking() {
+        let mut memory = Memory::new();
+        memory.write_byte(0xFF4F, 0); // select VRAM bank 0
+        memory.write_byte(0x8000, 0x11);
+        memory.write_byte(0xFF4F, 1); // select VRAM bank 1
+        memory.write_byte(0x8000, 0x22);
+
+        assert_eq!(memory.read_byte(0x8000), 0x22); // bank 1's value
+        memory.write_byte(0xFF4F, 0);
+        assert_eq!(memory.read_byte(0x8000), 0x11); // bank 0 preserved independently
+    }
+
+    #[test]
+    fn test_cgb_bg_palette_autoincrement() {
+        let mut memory = Memory::new();
+        memory.write_byte(0xFF68, 0x80); // index 0, auto-increment enabled
+        memory.write_byte(0xFF69, 0xAA); // -> palette byte 0, index advances to 1
+        memory.write_byte(0xFF69, 0xBB); // -> palette byte 1, index advances to 2
+
+        memory.write_byte(0xFF68, 0x00); // point at index 0 (no auto-increment)
+        assert_eq!(memory.read_byte(0xFF69), 0xAA);
+        memory.write_byte(0xFF68, 0x01);
+        assert_eq!(memory.read_byte(0xFF69), 0xBB);
     }
 
     #[test]
