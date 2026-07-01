@@ -192,6 +192,8 @@ pub struct Cpu {
     pub cycles: u64, // Total cycles executed
     pub halted: bool,
     pub interrupts_enabled: bool,
+    ime_pending: bool, // EI armed IME to turn on after the next instruction
+    halt_bug: bool,    // HALT bug: the next opcode fetch must not advance PC
     pub div_counter: u16,  // accumulates cycles for DIV (DIV = its high byte)
     pub tima_counter: u32, // accumulates cycles for TIMA
     pub ppu_dots: u32,     // accumulates cycles within the current scanline
@@ -214,6 +216,8 @@ impl Cpu {
             cycles: 0,
             halted: false,
             interrupts_enabled: false,
+            ime_pending: false,
+            halt_bug: false,
             div_counter: 0,
             tima_counter: 0,
             ppu_dots: 0,
@@ -262,12 +266,22 @@ impl Cpu {
             );
         }
 
+        // EI enables interrupts AFTER the next instruction: if a previous EI
+        // armed it, this is that next instruction, so enable IME once it's done.
+        let enable_ime = self.ime_pending;
+
         let before = self.cycles;
         // Fetch the opcode
         let opcode = self.fetch_byte();
 
         // Execute the instruction
         self.execute(opcode);
+
+        if enable_ime {
+            self.interrupts_enabled = true;
+            self.ime_pending = false;
+        }
+
         let elapsed = (self.cycles - before) as u32;
         self.step_timer(elapsed); // timer follows the CPU (2x in double-speed)
         // PPU/APU run at base rate; halve the cycle feed in double-speed.
@@ -721,7 +735,13 @@ impl Cpu {
     /// Fetch a byte from PC and increment PC
     fn fetch_byte(&mut self) -> u8 {
         let byte = self.memory.read_byte(self.pc);
-        self.pc = self.pc.wrapping_add(1);
+        if self.halt_bug {
+            // HALT bug: this fetch reads the byte but PC does not advance, so the
+            // next fetch reads it again (the byte executes twice).
+            self.halt_bug = false;
+        } else {
+            self.pc = self.pc.wrapping_add(1);
+        }
         byte
     }
 
@@ -978,7 +998,15 @@ impl Cpu {
             // LD r, r' - register/(HL) to register/(HL); 0x76 HALT
             0x40..=0x7F => {
                 if opcode == 0x76 {
-                    self.halted = true;
+                    // HALT bug: if IME is off but an interrupt is already pending,
+                    // the CPU doesn't halt - instead the next byte is read twice.
+                    let ie = self.memory.read_byte(0xFFFF);
+                    let iflag = self.memory.read_byte(0xFF0F);
+                    if !self.interrupts_enabled && (ie & iflag & 0x1F) != 0 {
+                        self.halt_bug = true;
+                    } else {
+                        self.halted = true;
+                    }
                     self.cycles += 4;
                 } else {
                     let dest = (opcode >> 3) & 0x07; // bits 5-3
@@ -1121,7 +1149,8 @@ impl Cpu {
                 self.sp = self.sp.wrapping_add(2);
 
                 self.pc = addr;
-                self.interrupts_enabled = true; // the only difference from RET
+                self.interrupts_enabled = true; // RETI enables IME immediately
+                self.ime_pending = false;
                 self.cycles += 16;
             }
 
@@ -1132,15 +1161,16 @@ impl Cpu {
                 self.cycles += 4;
             }
 
-            // DI - disable interrupts (clear IME)
+            // DI - disable interrupts (clear IME immediately, cancel any pending EI)
             0xF3 => {
                 self.interrupts_enabled = false;
+                self.ime_pending = false;
                 self.cycles += 4;
             }
 
-            // EI - enable interrupts (set IME)
+            // EI - enable interrupts, but not until AFTER the next instruction.
             0xFB => {
-                self.interrupts_enabled = true;
+                self.ime_pending = true;
                 self.cycles += 4;
             }
 
@@ -2555,18 +2585,36 @@ mod instruction_tests {
 
     #[test]
     fn test_ei_di() {
-        // EI sets IME
-        let mut cpu = setup_cpu(vec![0xFB]);
+        // EI enables IME only AFTER the following instruction. Program: EI; NOP.
+        let mut cpu = setup_cpu(vec![0xFB, 0x00]);
         cpu.interrupts_enabled = false;
-        cpu.step();
-        assert!(cpu.interrupts_enabled);
-        assert_eq!(cpu.cycles, 4);
+        cpu.step(); // EI: still off (delay)
+        assert!(!cpu.interrupts_enabled, "EI must not enable IME immediately");
+        cpu.step(); // NOP: now IME turns on
+        assert!(cpu.interrupts_enabled, "IME enabled after the instruction post-EI");
 
         // DI clears IME
         let mut cpu = setup_cpu(vec![0xF3]);
         cpu.interrupts_enabled = true;
         cpu.step();
         assert!(!cpu.interrupts_enabled);
+    }
+
+    #[test]
+    fn test_halt_bug() {
+        // HALT with IME off and an interrupt already pending: the CPU doesn't
+        // halt; PC fails to advance so the next opcode runs twice.
+        let mut cpu = setup_cpu(vec![0x76, 0x3C]); // HALT; INC A
+        cpu.interrupts_enabled = false;
+        cpu.registers.a = 0;
+        cpu.memory.write_byte(0xFFFF, 0x01); // IE: VBlank enabled
+        cpu.memory.write_byte(0xFF0F, 0x01); // IF: VBlank pending
+
+        cpu.step(); // HALT -> bug armed, not halted
+        assert!(!cpu.halted);
+        cpu.step(); // INC A (PC did not advance past it)
+        cpu.step(); // INC A again (byte re-read)
+        assert_eq!(cpu.registers.a, 2);
     }
 
     #[test]
