@@ -97,3 +97,8 @@ fn blargg_10_bit_ops() {
 fn blargg_11_op_a_hl() {
     check("11-op a,(hl).gb");
 }
+
+#[test]
+fn blargg_instr_timing() {
+    check("instr_timing.gb");
+}

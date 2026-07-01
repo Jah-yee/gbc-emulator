@@ -515,7 +515,6 @@ impl Cpu {
     }
 
     /// Draw sprites (OAM objects) that overlap scanline `ly`, on top of BG/window.
-    /// Simplifications: no BG priority (always on top), no 10-per-line limit.
     fn render_sprites(&mut self, ly: u8) {
         let lcdc = self.memory.read_byte(0xFF40);
         if lcdc & 0x02 == 0 {
@@ -524,8 +523,32 @@ impl Cpu {
         let height: i16 = if lcdc & 0x04 != 0 { 16 } else { 8 }; // bit 2: 8x16 vs 8x8
         let cgb = self.memory.is_cgb();
 
-        // Reverse order so a lower OAM index ends up drawn last (= on top).
-        for i in (0..40u16).rev() {
+        // Collect the first 10 sprites (in OAM order) that overlap this line.
+        // Real hardware draws at most 10 per line - the cause of sprite flicker.
+        let mut line: Vec<u16> = Vec::with_capacity(10);
+        for i in 0..40u16 {
+            let top = self.memory.read_byte(0xFE00 + i * 4) as i16 - 16;
+            if (ly as i16) >= top && (ly as i16) < top + height {
+                line.push(i);
+                if line.len() == 10 {
+                    break;
+                }
+            }
+        }
+
+        // Draw back-to-front so the highest-priority sprite lands last (on top).
+        // CGB: lower OAM index wins. DMG: smaller X wins, ties by lower index.
+        line.sort_by(|&a, &b| {
+            if cgb {
+                b.cmp(&a)
+            } else {
+                let ax = self.memory.read_byte(0xFE00 + a * 4 + 1);
+                let bx = self.memory.read_byte(0xFE00 + b * 4 + 1);
+                bx.cmp(&ax).then(b.cmp(&a))
+            }
+        });
+
+        for &i in &line {
             let base = 0xFE00 + i * 4;
             let oam_y = self.memory.read_byte(base) as i16; // screen Y + 16
             let oam_x = self.memory.read_byte(base + 1) as i16; // screen X + 8
@@ -2804,6 +2827,29 @@ mod instruction_tests {
         assert!(s.contains("SP:FFFE"), "debug_state was: {s}");
         // Post-boot LCDC default we seed in Memory::new.
         assert!(s.contains("LCDC:91"), "debug_state was: {s}");
+    }
+
+    #[test]
+    fn test_sprite_ten_per_line_limit() {
+        let mut cpu = setup_cpu(vec![]);
+        cpu.memory.write_byte(0x8010, 0xFF); // tile 1 = solid color 3
+        cpu.memory.write_byte(0x8011, 0xFF);
+        cpu.memory.write_byte(0xFF48, 0xE4);
+        cpu.memory.write_byte(0xFF40, 0b1001_0010); // LCD + unsigned data + sprites
+
+        // 11 non-overlapping sprites across line 0 (screen x = 0, 8, ... 80).
+        for n in 0..11u16 {
+            let base = 0xFE00 + n * 4;
+            cpu.memory.write_byte(base, 16); // Y -> line 0
+            cpu.memory.write_byte(base + 1, 8 + (n as u8) * 8); // X
+            cpu.memory.write_byte(base + 2, 1);
+            cpu.memory.write_byte(base + 3, 0);
+        }
+        cpu.render_sprites(0);
+
+        let blank = (224, 248, 208);
+        assert_ne!(cpu.framebuffer[0], blank); // sprite 0 drawn
+        assert_eq!(cpu.framebuffer[80], blank); // 11th sprite dropped (over 10-limit)
     }
 
     #[test]
