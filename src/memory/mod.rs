@@ -57,6 +57,8 @@ pub struct Memory {
     bcps: u8,              // 0xFF68: BG palette index (bits 0-5) + auto-increment (bit 7)
     ocps: u8,              // 0xFF6A: OBJ palette index + auto-increment
     svbk: usize,           // 0xFF70: which 4KB WRAM bank is mapped at 0xD000 (1-7)
+    hdma_src: u16,         // 0xFF51/52: VRAM DMA source
+    hdma_dst: u16,         // 0xFF53/54: VRAM DMA destination (within VRAM)
 
     // Audio.
     pub apu: Apu,
@@ -89,6 +91,8 @@ impl Memory {
             bcps: 0,
             ocps: 0,
             svbk: 1,
+            hdma_src: 0,
+            hdma_dst: 0,
             apu: Apu::new(),
         };
         // Post-boot register defaults (values the boot ROM leaves behind). Games
@@ -174,6 +178,9 @@ impl Memory {
 
             // CGB: WRAM bank register (unused bits read as 1).
             0xFF70 => 0xF8 | self.svbk as u8,
+
+            // CGB VRAM DMA status: we complete transfers instantly, so always done.
+            0xFF55 => 0xFF,
 
             // CGB palette registers: index registers read back directly, data
             // registers read the palette-RAM byte at the current index.
@@ -300,6 +307,24 @@ impl Memory {
             0xFF70 => {
                 let b = (value & 0x07) as usize;
                 self.svbk = if b == 0 { 1 } else { b };
+            }
+
+            // CGB VRAM DMA source/destination latches.
+            0xFF51 => self.hdma_src = (self.hdma_src & 0x00FF) | ((value as u16) << 8),
+            0xFF52 => self.hdma_src = (self.hdma_src & 0xFF00) | (value & 0xF0) as u16,
+            0xFF53 => self.hdma_dst = (self.hdma_dst & 0x00FF) | (((value & 0x1F) as u16) << 8),
+            0xFF54 => self.hdma_dst = (self.hdma_dst & 0xFF00) | (value & 0xF0) as u16,
+            // HDMA5 triggers the transfer. Bit 7 selects HBlank vs general mode;
+            // we do both instantly (HBlank timing not modeled - a simplification,
+            // but the data still lands, which is what most games need).
+            0xFF55 => {
+                let src = self.hdma_src & 0xFFF0;
+                let dst = 0x8000 | (self.hdma_dst & 0x1FF0);
+                let length = ((value & 0x7F) as usize + 1) * 0x10;
+                for i in 0..length as u16 {
+                    let b = self.read_byte(src + i);
+                    self.write_byte(dst + i, b);
+                }
             }
 
             // CGB BG palette: 0xFF68 sets the index (+auto-increment bit), 0xFF69
@@ -642,6 +667,24 @@ mod tests {
         // Disable again: data is retained but gated off (reads 0xFF).
         memory.write_byte(0x0000, 0x00);
         assert_eq!(memory.read_byte(0xA000), 0xFF);
+    }
+
+    #[test]
+    fn test_hdma_copies_to_vram() {
+        let mut memory = Memory::new();
+        // Stage source bytes in WRAM at 0xC000.
+        memory.write_byte(0xC000, 0xAB);
+        memory.write_byte(0xC00F, 0xCD);
+        // Source = 0xC000, dest = 0x8000, length = 1 block (0x10 bytes).
+        memory.write_byte(0xFF51, 0xC0);
+        memory.write_byte(0xFF52, 0x00);
+        memory.write_byte(0xFF53, 0x00);
+        memory.write_byte(0xFF54, 0x00);
+        memory.write_byte(0xFF55, 0x00); // trigger, length = (0+1)*0x10
+
+        assert_eq!(memory.read_byte(0x8000), 0xAB);
+        assert_eq!(memory.read_byte(0x800F), 0xCD);
+        assert_eq!(memory.read_byte(0xFF55), 0xFF); // reports done
     }
 
     #[test]
