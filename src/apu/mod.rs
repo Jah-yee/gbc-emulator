@@ -210,14 +210,14 @@ impl Apu {
         }
     }
 
-    /// Mix enabled channels into a single [-1.0, 1.0] sample.
+    /// Mix enabled channels into a single sample. Silence is 0.0 (not -1.0, which
+    /// would be a DC offset that clicks/pops). Scaled down to leave headroom for
+    /// the other three channels arriving in chunk 2.
     fn mix(&self) -> f32 {
         if !self.enabled {
             return 0.0;
         }
-        // One channel for now: map its 0..15 amplitude to roughly [-1, 1].
-        let s = self.ch2.sample() as f32 / 15.0; // 0.0..1.0
-        s * 2.0 - 1.0
+        (self.ch2.sample() as f32 / 15.0) * 0.25 // amplitude 0..15 -> 0.0..0.25
     }
 }
 
