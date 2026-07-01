@@ -12,6 +12,7 @@ use crate::cpu::Cpu;
 use input::{Hotkey, InputConfig, Pad};
 use sdl3::audio::{AudioFormat, AudioSpec};
 use sdl3::pixels::{Color, PixelFormat};
+use sdl3::rect::Rect;
 use sdl3::render::BlendMode;
 use sdl3::event::Event;
 
@@ -199,6 +200,7 @@ pub fn run(cpu: Cpu, rom_path: String) -> Cpu {
     let mut frames_since: u32 = 0;
     let mut last_measure = std::time::Instant::now();
     let mut measured_pct: u32 = 100; // last measured speed, for the overlay
+    let mut last_debug = false; // track overlay toggle to resize the window
 
     'running: loop {
         for event in event_pump.poll_iter() {
@@ -218,6 +220,19 @@ pub fn run(cpu: Cpu, rom_path: String) -> Cpu {
             ));
             frames_since = 0;
             last_measure = std::time::Instant::now();
+        }
+
+        // Widen the window to dock the debug panel; shrink back when it's hidden.
+        if app.show_debug != last_debug {
+            last_debug = app.show_debug;
+            let extra = if app.show_debug {
+                overlay::PANEL_W as u32
+            } else {
+                0
+            };
+            let _ = canvas
+                .window_mut()
+                .set_size(160 * SCALE + extra, 144 * SCALE);
         }
 
         match app.state {
@@ -259,7 +274,7 @@ pub fn run(cpu: Cpu, rom_path: String) -> Cpu {
                 blit(&app.cpu, &mut texture);
                 canvas.set_draw_color(Color::RGB(0, 0, 0));
                 canvas.clear();
-                canvas.copy(&texture, None, None).unwrap();
+                canvas.copy(&texture, None, game_rect(app.show_debug)).unwrap();
                 if app.show_debug {
                     let q = audio_stream.queued_bytes().unwrap_or(0);
                     overlay::draw(&mut canvas, &app.cpu, q, measured_pct);
@@ -272,7 +287,7 @@ pub fn run(cpu: Cpu, rom_path: String) -> Cpu {
                 // window-close stay responsive; sleep keeps this from busy-spinning.
                 canvas.set_draw_color(Color::RGB(0, 0, 0));
                 canvas.clear();
-                canvas.copy(&texture, None, None).unwrap();
+                canvas.copy(&texture, None, game_rect(app.show_debug)).unwrap();
                 // Blend only for the dim overlay, then restore opaque drawing so the
                 // per-frame game copy stays a cheap straight blit (avoids lag on a
                 // software renderer).
@@ -305,6 +320,16 @@ pub fn run(cpu: Cpu, rom_path: String) -> Cpu {
     }
 
     app.cpu
+}
+
+/// Destination rect for the game frame: a left sub-rect when the debug panel is
+/// docked, or the whole window (None) otherwise.
+fn game_rect(show_debug: bool) -> Option<Rect> {
+    if show_debug {
+        Some(Rect::new(0, 0, 160 * SCALE, 144 * SCALE))
+    } else {
+        None
+    }
 }
 
 /// Copy the emulator's RGB framebuffer into the streaming texture.

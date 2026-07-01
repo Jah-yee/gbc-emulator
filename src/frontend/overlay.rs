@@ -11,41 +11,26 @@ use sdl3::rect::Rect;
 use sdl3::render::Canvas;
 use sdl3::video::Window;
 
-// Window is 160x144 scaled by 4 (see SCALE in mod.rs).
-const WIN_W: u32 = 160 * 4;
+// Layout (window pixels). Game fills the left GAME_W x GAME_H; the debug panel
+// docks to its right. See mod.rs (SCALE=4) and the window-resize logic.
+pub const GAME_W: i32 = 160 * 4;
+pub const GAME_H: i32 = 144 * 4;
+pub const PANEL_W: i32 = 360;
 
-/// Draw the overlay on top of the current frame. `queued_bytes` is the audio
-/// backlog; `pct` is the measured emulation speed.
+/// Draw the docked debug panel to the right of the game. `queued_bytes` is the
+/// audio backlog; `pct` is the measured emulation speed.
 pub fn draw(canvas: &mut Canvas<Window>, cpu: &Cpu, queued_bytes: i32, pct: u32) {
-    // --- audio buffer depth bar along the very top ---
-    let buf_frac = (queued_bytes as f32 / 65_536.0).clamp(0.0, 1.0);
-    canvas.set_draw_color(Color::RGB(20, 20, 20));
-    let _ = canvas.fill_rect(Rect::new(0, 0, WIN_W, 6));
-    canvas.set_draw_color(Color::RGB(220, 200, 40));
-    let _ = canvas.fill_rect(Rect::new(0, 0, (WIN_W as f32 * buf_frac) as u32, 6));
+    let px = GAME_W; // panel left edge
+    canvas.set_draw_color(Color::RGB(16, 16, 20));
+    let _ = canvas.fill_rect(Rect::new(px, 0, PANEL_W as u32, GAME_H as u32));
 
-    // --- per-channel level meters (top-left) ---
-    let levels = cpu.memory.apu.channel_levels();
-    let bar_w: u32 = 14;
-    let gap: i32 = 4;
-    let max_h: i32 = 56;
-    let base_y: i32 = 10;
-    for (i, &lvl) in levels.iter().enumerate() {
-        let x = gap + i as i32 * (bar_w as i32 + gap);
-        canvas.set_draw_color(Color::RGB(30, 30, 30)); // track
-        let _ = canvas.fill_rect(Rect::new(x, base_y, bar_w, max_h as u32));
+    let white = Color::RGB(235, 235, 235);
+    let dim = Color::RGB(150, 150, 165);
+    let x0 = px + 8;
+    let s = 3i32;
+    let lh = 6 * s;
 
-        let h = (lvl.clamp(0.0, 1.0) * max_h as f32) as i32;
-        let color = if cpu.memory.apu.is_muted(i) {
-            Color::RGB(120, 40, 40) // muted -> dim red
-        } else {
-            Color::RGB(60, 220, 90) // active -> green
-        };
-        canvas.set_draw_color(color);
-        let _ = canvas.fill_rect(Rect::new(x, base_y + (max_h - h), bar_w, h as u32));
-    }
-
-    // --- text panel: speed + CPU/PPU state ---
+    // --- CPU / PPU state ---
     let r = &cpu.registers;
     let lines = [
         format!("SPD {}%", pct),
@@ -58,24 +43,46 @@ pub fn draw(canvas: &mut Canvas<Window>, cpu: &Cpu, queued_bytes: i32, pct: u32)
             cpu.memory.read_byte(0xFF40)
         ),
     ];
+    let mut y = 8i32;
+    for line in &lines {
+        draw_text(canvas, x0, y, s, line, white);
+        y += lh;
+    }
 
-    let scale = 3i32;
-    let line_h = 6 * scale; // 5 rows + 1 gap
-    let x0 = 4i32;
-    let y0 = base_y + max_h + 6;
+    // --- audio buffer depth ---
+    y += 12;
+    draw_text(canvas, x0, y, 2, "AUDIO BUF", dim);
+    y += 6 * 2 + 4;
+    let bar_full = PANEL_W - 16;
+    let frac = (queued_bytes as f32 / 65_536.0).clamp(0.0, 1.0);
+    canvas.set_draw_color(Color::RGB(40, 40, 40));
+    let _ = canvas.fill_rect(Rect::new(x0, y, bar_full as u32, 10));
+    canvas.set_draw_color(Color::RGB(220, 200, 40));
+    let _ = canvas.fill_rect(Rect::new(x0, y, (bar_full as f32 * frac) as u32, 10));
 
-    // Opaque backdrop so text stays legible over any frame.
-    canvas.set_draw_color(Color::RGB(0, 0, 0));
-    let _ = canvas.fill_rect(Rect::new(
-        2,
-        y0 - 2,
-        210,
-        (lines.len() as i32 * line_h + 4) as u32,
-    ));
+    // --- per-channel APU level meters ---
+    y += 22;
+    draw_text(canvas, x0, y, 2, "CH LEVELS", dim);
+    y += 6 * 2 + 6;
+    let levels = cpu.memory.apu.channel_levels();
+    let bw = 30i32;
+    let gap = 18i32;
+    let mh = 80i32;
+    for (i, &lvl) in levels.iter().enumerate() {
+        let bx = x0 + i as i32 * (bw + gap);
+        canvas.set_draw_color(Color::RGB(40, 40, 40));
+        let _ = canvas.fill_rect(Rect::new(bx, y, bw as u32, mh as u32));
 
-    let white = Color::RGB(235, 235, 235);
-    for (i, line) in lines.iter().enumerate() {
-        draw_text(canvas, x0, y0 + i as i32 * line_h, scale, line, white);
+        let h = (lvl.clamp(0.0, 1.0) * mh as f32) as i32;
+        let col = if cpu.memory.apu.is_muted(i) {
+            Color::RGB(120, 40, 40)
+        } else {
+            Color::RGB(60, 220, 90)
+        };
+        canvas.set_draw_color(col);
+        let _ = canvas.fill_rect(Rect::new(bx, y + (mh - h), bw as u32, h as u32));
+
+        draw_text(canvas, bx + bw / 2 - 3, y + mh + 4, 2, &format!("{}", i + 1), white);
     }
 }
 
