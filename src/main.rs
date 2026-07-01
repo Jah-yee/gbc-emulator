@@ -44,8 +44,8 @@ fn run_one_frame(cpu: &mut Cpu) {
 /// Map a key to a joypad button and set/clear its bit. Arrows = D-pad;
 /// Z=A, X=B, Backspace=Select, Return=Start.
 #[cfg(feature = "gui")]
-fn set_key(k: sdl2::keyboard::Keycode, pressed: bool, dpad: &mut u8, buttons: &mut u8) {
-    use sdl2::keyboard::Keycode;
+fn set_key(k: sdl3::keyboard::Keycode, pressed: bool, dpad: &mut u8, buttons: &mut u8) {
+    use sdl3::keyboard::Keycode;
     let (mask, target): (u8, &mut u8) = match k {
         Keycode::Right => (0b0001, dpad),
         Keycode::Left => (0b0010, dpad),
@@ -67,12 +67,12 @@ fn set_key(k: sdl2::keyboard::Keycode, pressed: bool, dpad: &mut u8, buttons: &m
 ///
 #[cfg(feature = "gui")]
 fn run_window(mut cpu: Cpu) -> Cpu {
-    use sdl2::audio::{AudioQueue, AudioSpecDesired};
-    use sdl2::{event::Event, keyboard::Keycode, pixels::PixelFormatEnum};
+    use sdl3::audio::{AudioFormat, AudioSpec};
+    use sdl3::{event::Event, keyboard::Keycode, pixels::PixelFormat};
 
     const SCALE: u32 = 4;
 
-    let sdl = sdl2::init().unwrap();
+    let sdl = sdl3::init().unwrap();
     let video = sdl.video().unwrap();
 
     let window = video
@@ -81,26 +81,30 @@ fn run_window(mut cpu: Cpu) -> Cpu {
         .build()
         .unwrap();
 
-    // No vsync: we pace the loop to the audio queue instead (below), so speed is
-    // correct regardless of the monitor's refresh rate.
-    let mut canvas = window.into_canvas().build().unwrap();
+    // No vsync: we pace the loop to the audio stream instead (below), so speed is
+    // correct regardless of the monitor's refresh rate. (SDL3 into_canvas returns
+    // the Canvas directly - no builder.)
+    let mut canvas = window.into_canvas();
 
     let texture_creator = canvas.texture_creator();
     let mut texture = texture_creator
-        .create_texture_streaming(PixelFormatEnum::RGB24, 160, 144)
+        .create_texture_streaming(PixelFormat::RGB24, 160, 144)
         .unwrap();
 
     let mut event_pump = sdl.event_pump().unwrap();
 
-    // Audio: open a mono 44.1kHz queue and feed it the APU's samples each frame.
+    // Audio: open the default playback device and an f32 stereo stream, and push
+    // the APU's samples into it each frame. (SDL3 replaces SDL2's AudioQueue with
+    // an AudioStream bound to a device.)
     let audio = sdl.audio().unwrap();
-    let desired = AudioSpecDesired {
+    let spec = AudioSpec {
         freq: Some(44_100),
         channels: Some(2), // interleaved stereo
-        samples: Some(2048),
+        format: Some(AudioFormat::f32_sys()),
     };
-    let audio_queue: AudioQueue<f32> = audio.open_queue(None, &desired).unwrap();
-    audio_queue.resume();
+    let device = audio.open_playback_device(&spec).unwrap();
+    let audio_stream = device.open_device_stream(Some(&spec)).unwrap();
+    audio_stream.resume().unwrap();
 
     // Joypad press masks (low nibble each, 1 = pressed), updated on key events.
     let mut dpad = 0u8;
@@ -135,7 +139,7 @@ fn run_window(mut cpu: Cpu) -> Cpu {
         // wait a moment and loop back WITHOUT running a frame. Because we poll
         // events at the top of every iteration, input stays responsive while we
         // wait (a blocking sleep here would make the window unresponsive).
-        if audio_queue.size() > 16_384 {
+        if audio_stream.queued_bytes().unwrap_or(0) > 16_384 {
             std::thread::sleep(std::time::Duration::from_millis(1));
             continue;
         }
@@ -145,7 +149,7 @@ fn run_window(mut cpu: Cpu) -> Cpu {
 
         // Feed generated audio to the sound card.
         let samples: Vec<f32> = cpu.memory.apu.output.drain(..).collect();
-        let _ = audio_queue.queue_audio(&samples);
+        let _ = audio_stream.put_data_f32(&samples);
 
         // copy framebuffer -> texture (part 3 fills this in)
         texture
