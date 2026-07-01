@@ -198,6 +198,7 @@ pub fn run(cpu: Cpu, rom_path: String) -> Cpu {
     // shown in the title bar and refreshed ~twice a second.
     let mut frames_since: u32 = 0;
     let mut last_measure = std::time::Instant::now();
+    let mut measured_pct: u32 = 100; // last measured speed, for the overlay
 
     'running: loop {
         for event in event_pump.poll_iter() {
@@ -210,6 +211,7 @@ pub fn run(cpu: Cpu, rom_path: String) -> Cpu {
         if last_measure.elapsed().as_millis() >= 500 {
             let secs = last_measure.elapsed().as_secs_f32();
             let pct = (frames_since as f32 / secs / 59.7275 * 100.0).round() as u32;
+            measured_pct = pct;
             let _ = canvas.window_mut().set_title(&format!(
                 "gbc - {} - {}% (FF {}x)",
                 app.rom_path, pct, app.speed_mult
@@ -260,7 +262,7 @@ pub fn run(cpu: Cpu, rom_path: String) -> Cpu {
                 canvas.copy(&texture, None, None).unwrap();
                 if app.show_debug {
                     let q = audio_stream.queued_bytes().unwrap_or(0);
-                    overlay::draw(&mut canvas, &app.cpu, q);
+                    overlay::draw(&mut canvas, &app.cpu, q, measured_pct);
                 }
                 canvas.present();
             }
@@ -280,7 +282,7 @@ pub fn run(cpu: Cpu, rom_path: String) -> Cpu {
                 canvas.set_blend_mode(BlendMode::None);
                 if app.show_debug {
                     let q = audio_stream.queued_bytes().unwrap_or(0);
-                    overlay::draw(&mut canvas, &app.cpu, q);
+                    overlay::draw(&mut canvas, &app.cpu, q, measured_pct);
                 }
                 canvas.present();
                 std::thread::sleep(std::time::Duration::from_millis(16));
