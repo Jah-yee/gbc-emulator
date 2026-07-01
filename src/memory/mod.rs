@@ -143,11 +143,14 @@ impl Memory {
 
             // External (cartridge) RAM - only accessible while enabled.
             0xA000..=0xBFFF => {
-                if self.ram_enabled {
+                if !self.ram_enabled {
+                    0xFF
+                } else if matches!(self.cart_type, 0x05 | 0x06) {
+                    // MBC2: built-in 512 x 4-bit RAM (echoed); upper nibble reads 1.
+                    0xF0 | (self.external_ram[address as usize & 0x1FF] & 0x0F)
+                } else {
                     let off = self.ram_bank * 0x2000 + (address - 0xA000) as usize;
                     self.external_ram.get(off).copied().unwrap_or(0xFF)
-                } else {
-                    0xFF
                 }
             }
 
@@ -236,6 +239,19 @@ impl Memory {
                     _ => {}
                 },
 
+                // MBC2: registers are all in 0x0000-0x3FFF; address bit 8 selects
+                // RAM-enable (bit clear) vs ROM bank (bit set, low 4 bits, 0->1).
+                0x05..=0x06 => {
+                    if address <= 0x3FFF {
+                        if address & 0x0100 == 0 {
+                            self.ram_enabled = value & 0x0F == 0x0A;
+                        } else {
+                            let n = (value & 0x0F) as usize;
+                            self.rom_bank = if n == 0 { 1 } else { n };
+                        }
+                    }
+                }
+
                 // MBC3.
                 0x0F..=0x13 => match address {
                     // RAM (and RTC) enable.
@@ -281,9 +297,14 @@ impl Memory {
             // External RAM
             0xA000..=0xBFFF => {
                 if self.ram_enabled {
-                    let off = self.ram_bank * 0x2000 + (address - 0xA000) as usize;
-                    if let Some(slot) = self.external_ram.get_mut(off) {
-                        *slot = value;
+                    if matches!(self.cart_type, 0x05 | 0x06) {
+                        // MBC2: only the low nibble is stored.
+                        self.external_ram[address as usize & 0x1FF] = value & 0x0F;
+                    } else {
+                        let off = self.ram_bank * 0x2000 + (address - 0xA000) as usize;
+                        if let Some(slot) = self.external_ram.get_mut(off) {
+                            *slot = value;
+                        }
                     }
                 }
             }
@@ -659,6 +680,27 @@ mod tests {
         assert_eq!(memory.read_byte(0xA000), 0x11);
         memory.write_byte(0x4000, 0x01);
         assert_eq!(memory.read_byte(0xA000), 0x22);
+    }
+
+    #[test]
+    fn test_mbc2_bank_and_ram() {
+        let mut memory = Memory::new();
+        let mut rom = vec![0u8; 0x4000 * 3];
+        rom[0x0147] = 0x06; // MBC2 + battery
+        rom[0x4000] = 0xAA; // bank 1
+        rom[0x8000] = 0xBB; // bank 2
+        memory.load_rom(&rom);
+
+        // ROM bank: address bit 8 SET selects the bank (low 4 bits).
+        memory.write_byte(0x2100, 0x02);
+        assert_eq!(memory.read_byte(0x4000), 0xBB);
+
+        // RAM enable: address bit 8 CLEAR.
+        memory.write_byte(0x0000, 0x0A);
+        // 4-bit RAM: only the low nibble stores; high nibble reads as 1.
+        memory.write_byte(0xA000, 0xAB);
+        assert_eq!(memory.read_byte(0xA000), 0xFB); // 0xF0 | 0x0B
+        assert_eq!(memory.read_byte(0xA200), 0xFB); // echoes every 0x200
     }
 
     #[test]
