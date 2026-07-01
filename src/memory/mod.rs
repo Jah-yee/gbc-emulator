@@ -59,6 +59,8 @@ pub struct Memory {
     svbk: usize,           // 0xFF70: which 4KB WRAM bank is mapped at 0xD000 (1-7)
     hdma_src: u16,         // 0xFF51/52: VRAM DMA source
     hdma_dst: u16,         // 0xFF53/54: VRAM DMA destination (within VRAM)
+    pub double_speed: bool, // CGB double-speed mode (KEY1 bit 7)
+    key1_prepare: bool,    // KEY1 bit 0: a speed switch is armed for the next STOP
 
     // Audio.
     pub apu: Apu,
@@ -93,6 +95,8 @@ impl Memory {
             svbk: 1,
             hdma_src: 0,
             hdma_dst: 0,
+            double_speed: false,
+            key1_prepare: false,
             apu: Apu::new(),
         };
         // Post-boot register defaults (values the boot ROM leaves behind). Games
@@ -172,6 +176,18 @@ impl Memory {
 
             // Audio registers delegate to the APU.
             0xFF10..=0xFF3F => self.apu.read_reg(address),
+
+            // CGB KEY1: bit 7 = current speed, bit 0 = armed switch.
+            0xFF4D => {
+                let mut v = 0x7E; // unused bits read 1
+                if self.double_speed {
+                    v |= 0x80;
+                }
+                if self.key1_prepare {
+                    v |= 0x01;
+                }
+                v
+            }
 
             // CGB: VRAM bank register (unused bits read as 1).
             0xFF4F => 0xFE | self.vram_bank as u8,
@@ -300,6 +316,9 @@ impl Memory {
             // Audio registers delegate to the APU.
             0xFF10..=0xFF3F => self.apu.write_reg(address, value),
 
+            // CGB KEY1: the game arms a speed switch via bit 0 (STOP performs it).
+            0xFF4D => self.key1_prepare = value & 0x01 != 0,
+
             // CGB: select the VRAM bank (bit 0).
             0xFF4F => self.vram_bank = value as usize & 1,
 
@@ -399,6 +418,18 @@ impl Memory {
     /// True if the cartridge declares Game Boy Color support (header 0x0143).
     pub fn is_cgb(&self) -> bool {
         self.cgb_mode
+    }
+
+    /// Perform an armed CGB speed switch (called by STOP). Returns whether one
+    /// happened - if not, STOP was a real "stop the CPU".
+    pub fn try_speed_switch(&mut self) -> bool {
+        if self.key1_prepare {
+            self.double_speed = !self.double_speed;
+            self.key1_prepare = false;
+            true
+        } else {
+            false
+        }
     }
 
     /// Read a byte from a specific VRAM bank (the PPU needs bank 0 for tiles/maps
@@ -667,6 +698,18 @@ mod tests {
         // Disable again: data is retained but gated off (reads 0xFF).
         memory.write_byte(0x0000, 0x00);
         assert_eq!(memory.read_byte(0xA000), 0xFF);
+    }
+
+    #[test]
+    fn test_key1_speed_switch() {
+        let mut memory = Memory::new();
+        assert!(!memory.double_speed);
+        memory.write_byte(0xFF4D, 0x01); // arm a switch
+        assert!(memory.try_speed_switch());
+        assert!(memory.double_speed);
+        assert_eq!(memory.read_byte(0xFF4D) & 0x80, 0x80); // reports double speed
+        assert!(!memory.try_speed_switch()); // nothing armed -> no switch
+        assert!(memory.double_speed);
     }
 
     #[test]

@@ -226,8 +226,10 @@ impl Cpu {
             // When halted, just increment cycles
             self.cycles += 4;
             self.step_timer(4);
-            self.step_ppu(4);
-            self.memory.apu.step(4);
+            // PPU/APU run at base rate; in double-speed they get half the cycles.
+            let ppu_cycles = 4 >> (self.memory.double_speed as u32);
+            self.step_ppu(ppu_cycles);
+            self.memory.apu.step(ppu_cycles);
             return;
         }
 
@@ -260,9 +262,11 @@ impl Cpu {
         // Execute the instruction
         self.execute(opcode);
         let elapsed = (self.cycles - before) as u32;
-        self.step_timer(elapsed);
-        self.step_ppu(elapsed);
-        self.memory.apu.step(elapsed);
+        self.step_timer(elapsed); // timer follows the CPU (2x in double-speed)
+        // PPU/APU run at base rate; halve the cycle feed in double-speed.
+        let ppu_cycles = elapsed >> (self.memory.double_speed as u32);
+        self.step_ppu(ppu_cycles);
+        self.memory.apu.step(ppu_cycles);
     }
 
     /// Advance the timer by the number of cycles the last instruction took.
@@ -1361,6 +1365,16 @@ impl Cpu {
                 self.registers.h = (result >> 8) as u8;
                 self.registers.l = result as u8;
                 self.cycles += 12;
+            }
+
+            // STOP: on CGB, performs an armed speed switch; otherwise stops the
+            // CPU. It's a 2-byte opcode (0x10 0x00), so consume the next byte.
+            0x10 => {
+                self.fetch_byte();
+                if !self.memory.try_speed_switch() {
+                    self.halted = true;
+                }
+                self.cycles += 4;
             }
 
             //...so I need to implement all 256 opcodes?
@@ -2763,6 +2777,15 @@ mod instruction_tests {
         assert!(s.contains("SP:FFFE"), "debug_state was: {s}");
         // Post-boot LCDC default we seed in Memory::new.
         assert!(s.contains("LCDC:91"), "debug_state was: {s}");
+    }
+
+    #[test]
+    fn test_stop_performs_speed_switch() {
+        let mut cpu = setup_cpu(vec![0x10, 0x00]); // STOP
+        cpu.memory.write_byte(0xFF4D, 0x01); // arm the speed switch
+        cpu.step();
+        assert!(cpu.memory.double_speed); // switched
+        assert!(!cpu.halted); // a speed switch resumes execution, not a real stop
     }
 
     #[test]

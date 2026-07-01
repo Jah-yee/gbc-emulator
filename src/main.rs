@@ -32,7 +32,10 @@ fn setup_demo(cpu: &mut Cpu) {
 /// not instruction-based: real instructions take a variable number of cycles,
 /// so a fixed instruction count would make the game speed drift.
 fn run_one_frame(cpu: &mut Cpu) {
-    let target = cpu.cycles + 70224;
+    // One PPU frame is 70224 base cycles; in double-speed the CPU runs twice as
+    // many cycles to produce the same frame.
+    let per_frame = 70224 * if cpu.memory.double_speed { 2 } else { 1 };
+    let target = cpu.cycles + per_frame;
     while cpu.cycles < target {
         cpu.step();
     }
