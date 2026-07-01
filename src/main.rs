@@ -145,6 +145,12 @@ fn main() {
     let rom = std::fs::read(&path).expect("failed to read ROM");
     cpu.memory.load_rom(&rom);
 
+    // Tell CGB cartridges they're on a Game Boy Color (A=0x11 at boot), so they
+    // enable color. DMG carts keep the DMG post-boot A=0x01.
+    if cpu.memory.is_cgb() {
+        cpu.registers.a = 0x11;
+    }
+
     // Battery save: load the .sav next to the ROM, if one exists.
     let save_path = format!("{path}.sav");
     if let Ok(data) = std::fs::read(&save_path) {

@@ -344,6 +344,26 @@ impl Memory {
         self.cgb_mode
     }
 
+    /// Read a byte from a specific VRAM bank (the PPU needs bank 0 for tiles/maps
+    /// and bank 1 for CGB tile attributes, regardless of the current VBK setting).
+    pub fn vram_read(&self, bank: usize, addr: u16) -> u8 {
+        self.vram[bank * 0x2000 + (addr - 0x8000) as usize]
+    }
+
+    /// A CGB background color: palette 0-7, color id 0-3 -> RGB888.
+    pub fn cgb_bg_color(&self, palette: usize, color: usize) -> (u8, u8, u8) {
+        let i = palette * 8 + color * 2; // 8 bytes per palette, 2 per color
+        let rgb555 = self.bg_palette[i] as u16 | ((self.bg_palette[i + 1] as u16) << 8);
+        rgb555_to_rgb888(rgb555)
+    }
+
+    /// A CGB sprite color: palette 0-7, color id 0-3 -> RGB888.
+    pub fn cgb_obj_color(&self, palette: usize, color: usize) -> (u8, u8, u8) {
+        let i = palette * 8 + color * 2;
+        let rgb555 = self.obj_palette[i] as u16 | ((self.obj_palette[i + 1] as u16) << 8);
+        rgb555_to_rgb888(rgb555)
+    }
+
     /// True if the cartridge has battery-backed RAM (its save persists).
     pub fn has_battery(&self) -> bool {
         matches!(
@@ -370,6 +390,15 @@ impl Memory {
         self.dpad = dpad & 0x0F;
         self.buttons = buttons & 0x0F;
     }
+}
+
+/// Convert a 15-bit CGB color (RGB555, 5 bits each) to 8-bit-per-channel RGB.
+/// Scale 5->8 bits by `(v << 3) | (v >> 2)` so 0x1F maps to 0xFF.
+fn rgb555_to_rgb888(c: u16) -> (u8, u8, u8) {
+    let r = (c & 0x1F) as u8;
+    let g = ((c >> 5) & 0x1F) as u8;
+    let b = ((c >> 10) & 0x1F) as u8;
+    ((r << 3) | (r >> 2), (g << 3) | (g >> 2), (b << 3) | (b >> 2))
 }
 
 #[cfg(test)]

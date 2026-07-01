@@ -409,13 +409,51 @@ impl Cpu {
         decode_tile_row(low, high)[(px_x % 8) as usize]
     }
 
+    /// CGB version: returns the final RGB for a BG/window pixel, honoring the
+    /// per-tile attribute byte in VRAM bank 1 (palette, tile bank, X/Y flip).
+    fn cgb_tile_pixel(&self, map_base: u16, px_x: u16, px_y: u16, lcdc: u8) -> (u8, u8, u8) {
+        let tile_col = (px_x / 8) & 31;
+        let tile_row = (px_y / 8) & 31;
+        let map_addr = map_base + tile_row * 32 + tile_col;
+
+        let tile_id = self.memory.vram_read(0, map_addr); // tile index: bank 0
+        let attr = self.memory.vram_read(1, map_addr); // attributes: bank 1
+        let palette = (attr & 0x07) as usize;
+        let tile_bank = ((attr >> 3) & 1) as usize;
+        let x_flip = attr & 0x20 != 0;
+        let y_flip = attr & 0x40 != 0;
+
+        let tile_addr: u16 = if lcdc & 0x10 != 0 {
+            0x8000 + (tile_id as u16) * 16
+        } else {
+            (0x9000_i32 + (tile_id as i8 as i32) * 16) as u16
+        };
+
+        let mut row = px_y % 8;
+        if y_flip {
+            row = 7 - row;
+        }
+        let row_addr = tile_addr + row * 2;
+        let low = self.memory.vram_read(tile_bank, row_addr);
+        let high = self.memory.vram_read(tile_bank, row_addr + 1);
+
+        let mut col = (px_x % 8) as usize;
+        if x_flip {
+            col = 7 - col;
+        }
+        let color = decode_tile_row(low, high)[col] as usize;
+        self.memory.cgb_bg_color(palette, color)
+    }
+
     /// Render one scanline (background + window) into the framebuffer.
     fn render_scanline(&mut self, ly: u8) {
         let lcdc = self.memory.read_byte(0xFF40);
         let bgp = self.memory.read_byte(0xFF47);
+        let cgb = self.memory.is_cgb();
 
-        // BG disabled -> blank line.
-        if lcdc & 0x01 == 0 {
+        // DMG only: BG disabled (LCDC bit 0) blanks the line. In CGB that bit
+        // means something else and the background is always drawn.
+        if !cgb && lcdc & 0x01 == 0 {
             for x in 0..160usize {
                 self.framebuffer[ly as usize * 160 + x] = dmg_rgb(0);
             }
@@ -436,17 +474,23 @@ impl Cpu {
             // (top-left at screen (WX-7, WY)). The window does not scroll.
             let in_window = window_on && ly as u16 >= wy as u16 && x + 7 >= wx as u16;
 
-            let color = if in_window {
-                let win_x = x + 7 - wx as u16;
-                let win_y = ly as u16 - wy as u16;
-                self.tile_pixel(win_map, win_x, win_y, lcdc)
+            // Pick the map + coordinates for this pixel (window or scrolled BG).
+            let (map, mx, my) = if in_window {
+                (win_map, x + 7 - wx as u16, ly as u16 - wy as u16)
             } else {
-                let bg_x = (x + scx as u16) & 0xFF;
-                let bg_y = (ly as u16 + scy as u16) & 0xFF;
-                self.tile_pixel(bg_map, bg_x, bg_y, lcdc)
+                (
+                    bg_map,
+                    (x + scx as u16) & 0xFF,
+                    (ly as u16 + scy as u16) & 0xFF,
+                )
             };
 
-            self.framebuffer[ly as usize * 160 + x as usize] = dmg_rgb(apply_palette(bgp, color));
+            let rgb = if cgb {
+                self.cgb_tile_pixel(map, mx, my, lcdc)
+            } else {
+                dmg_rgb(apply_palette(bgp, self.tile_pixel(map, mx, my, lcdc)))
+            };
+            self.framebuffer[ly as usize * 160 + x as usize] = rgb;
         }
     }
 
@@ -458,6 +502,7 @@ impl Cpu {
             return; // LCDC bit 1: sprites (OBJ) disabled
         }
         let height: i16 = if lcdc & 0x04 != 0 { 16 } else { 8 }; // bit 2: 8x16 vs 8x8
+        let cgb = self.memory.is_cgb();
 
         // Reverse order so a lower OAM index ends up drawn last (= on top).
         for i in (0..40u16).rev() {
@@ -488,18 +533,13 @@ impl Cpu {
             };
             let row_in_tile = (row % 8) as u16;
 
-            // Sprites always use unsigned 0x8000 tile-data addressing.
+            // Sprites always use unsigned 0x8000 tile-data addressing. In CGB
+            // mode flag bit 3 picks which VRAM bank holds the tile.
+            let tile_bank = if cgb { ((flags >> 3) & 1) as usize } else { 0 };
             let addr = 0x8000 + tile_index as u16 * 16 + row_in_tile * 2;
-            let low = self.memory.read_byte(addr);
-            let high = self.memory.read_byte(addr + 1);
+            let low = self.memory.vram_read(tile_bank, addr);
+            let high = self.memory.vram_read(tile_bank, addr + 1);
             let pixels = decode_tile_row(low, high);
-
-            // flag bit 4 selects the sprite palette.
-            let palette = if flags & 0x10 != 0 {
-                self.memory.read_byte(0xFF49) // OBP1
-            } else {
-                self.memory.read_byte(0xFF48) // OBP0
-            };
 
             for col in 0..8i16 {
                 let px = if flags & 0x20 != 0 { 7 - col } else { col }; // X-flip
@@ -511,8 +551,19 @@ impl Cpu {
                 if !(0..160).contains(&screen_x) {
                     continue; // off-screen horizontally
                 }
-                let shade = apply_palette(palette, color);
-                self.framebuffer[ly as usize * 160 + screen_x as usize] = dmg_rgb(shade);
+                let rgb = if cgb {
+                    // CGB: flag bits 0-2 select one of 8 OBJ palettes.
+                    self.memory.cgb_obj_color((flags & 0x07) as usize, color as usize)
+                } else {
+                    // DMG: flag bit 4 picks OBP0/OBP1.
+                    let dmg_pal = if flags & 0x10 != 0 {
+                        self.memory.read_byte(0xFF49)
+                    } else {
+                        self.memory.read_byte(0xFF48)
+                    };
+                    dmg_rgb(apply_palette(dmg_pal, color))
+                };
+                self.framebuffer[ly as usize * 160 + screen_x as usize] = rgb;
             }
         }
     }
