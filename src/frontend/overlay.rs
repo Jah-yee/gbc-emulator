@@ -17,9 +17,12 @@ pub const GAME_H: i32 = 144 * 4;
 pub const PANEL_W: i32 = 360;
 
 /// Build a float rect from integer window coords (SDL3's renderer is float-based).
-fn r(x: i32, y: i32, w: i32, h: i32) -> FRect {
+fn fr(x: i32, y: i32, w: i32, h: i32) -> FRect {
     FRect::new(x as f32, y as f32, w as f32, h as f32)
 }
+
+/// DMG 4-shade green palette (matches the rendered picture).
+const DMG_SHADES: [(u8, u8, u8); 4] = [(224, 248, 208), (136, 192, 112), (52, 104, 86), (8, 24, 32)];
 
 /// Draw the docked debug panel to the right of the game. `queued_bytes` is the
 /// audio backlog; `pct` is the measured emulation speed.
@@ -36,7 +39,7 @@ pub fn draw(
 ) {
     let px = GAME_W; // panel left edge
     canvas.set_draw_color(Color::RGB(16, 16, 20));
-    let _ = canvas.fill_rect(r(px, 0, PANEL_W, GAME_H));
+    let _ = canvas.fill_rect(fr(px, 0, PANEL_W, GAME_H));
 
     let white = Color::RGB(235, 235, 235);
     let dim = Color::RGB(150, 150, 165);
@@ -70,9 +73,9 @@ pub fn draw(
     let bar_full = PANEL_W - 16;
     let frac = (queued_bytes as f32 / 65_536.0).clamp(0.0, 1.0);
     canvas.set_draw_color(Color::RGB(40, 40, 40));
-    let _ = canvas.fill_rect(r(x0, y, bar_full, 10));
+    let _ = canvas.fill_rect(fr(x0, y, bar_full, 10));
     canvas.set_draw_color(Color::RGB(220, 200, 40));
-    let _ = canvas.fill_rect(r(x0, y, (bar_full as f32 * frac) as i32, 10));
+    let _ = canvas.fill_rect(fr(x0, y, (bar_full as f32 * frac) as i32, 10));
 
     // --- per-channel APU level meters ---
     y += 22;
@@ -85,7 +88,7 @@ pub fn draw(
     for (i, &lvl) in levels.iter().enumerate() {
         let bx = x0 + i as i32 * (bw + gap);
         canvas.set_draw_color(Color::RGB(40, 40, 40));
-        let _ = canvas.fill_rect(r(bx, y, bw, mh));
+        let _ = canvas.fill_rect(fr(bx, y, bw, mh));
 
         let h = (lvl.clamp(0.0, 1.0) * mh as f32) as i32;
         let col = if cpu.memory.apu.is_muted(i) {
@@ -94,14 +97,16 @@ pub fn draw(
             Color::RGB(60, 220, 90)
         };
         canvas.set_draw_color(col);
-        let _ = canvas.fill_rect(r(bx, y + (mh - h), bw, h));
+        let _ = canvas.fill_rect(fr(bx, y + (mh - h), bw, h));
 
         draw_text(canvas, bx + bw / 2 - 3, y + mh + 4, 2, &format!("{}", i + 1), white);
     }
 
-    // --- VRAM tile viewer (384 tiles at 0x8000, bank 0) ---
+    // --- VRAM tile viewer (left) + palettes (right column) ---
     y += mh + 18;
+    let col_x = x0 + 232; // palette column, right of the tile sheet
     draw_text(canvas, x0, y, 2, "VRAM TILES", dim);
+    draw_text(canvas, col_x, y, 2, "PALETTES", dim);
     y += 6 * 2 + 4;
 
     tile_tex
@@ -131,6 +136,52 @@ pub fn draw(
     let avail = (GAME_H - y - 6).max(0) as f32;
     let sheet_w = avail * TILE_TEX_W as f32 / TILE_TEX_H as f32;
     let _ = canvas.copy(tile_tex, None, FRect::new(x0 as f32, y as f32, sheet_w, avail));
+
+    draw_palettes(canvas, cpu, col_x, y);
+}
+
+/// Draw palette swatches in a column at (x, y0): CGB's 8 BG + 8 OBJ palettes
+/// (RGB555), or DMG's BGP/OBP0/OBP1 (grayscale) with 4 colors each.
+fn draw_palettes(canvas: &mut Canvas<Window>, cpu: &Cpu, x: i32, y0: i32) {
+    let sw = 12i32; // swatch size
+    let rh = 14i32; // row pitch
+    let dim = Color::RGB(150, 150, 165);
+    let mut y = y0;
+
+    let swatch_row = |canvas: &mut Canvas<Window>, y: i32, colors: [(u8, u8, u8); 4]| {
+        for (c, &(r, g, b)) in colors.iter().enumerate() {
+            canvas.set_draw_color(Color::RGB(r, g, b));
+            let _ = canvas.fill_rect(fr(x + c as i32 * sw, y, sw - 1, sw - 1));
+        }
+    };
+
+    if cpu.memory.is_cgb() {
+        for (label, obj) in [("BG", false), ("OBJ", true)] {
+            draw_text(canvas, x, y, 2, label, dim);
+            y += 12;
+            for p in 0..8 {
+                let colors = std::array::from_fn(|c| {
+                    if obj {
+                        cpu.memory.cgb_obj_color(p, c)
+                    } else {
+                        cpu.memory.cgb_bg_color(p, c)
+                    }
+                });
+                swatch_row(canvas, y, colors);
+                y += rh;
+            }
+            y += 6;
+        }
+    } else {
+        for (label, addr) in [("BGP", 0xFF47u16), ("OB0", 0xFF48), ("OB1", 0xFF49)] {
+            draw_text(canvas, x, y, 2, label, dim);
+            y += 12;
+            let byte = cpu.memory.read_byte(addr);
+            let colors = std::array::from_fn(|c| DMG_SHADES[((byte >> (c * 2)) & 3) as usize]);
+            swatch_row(canvas, y, colors);
+            y += rh + 6;
+        }
+    }
 }
 
 /// Render an uppercase/hex string with the embedded 3x5 font at `scale`x.
@@ -142,7 +193,7 @@ fn draw_text(canvas: &mut Canvas<Window>, x: i32, y: i32, scale: i32, text: &str
         for (row, &bits) in glyph.iter().enumerate() {
             for col in 0..3i32 {
                 if bits & (1 << (2 - col)) != 0 {
-                    let _ = canvas.fill_rect(r(cx + col * scale, y + row as i32 * scale, scale, scale));
+                    let _ = canvas.fill_rect(fr(cx + col * scale, y + row as i32 * scale, scale, scale));
                 }
             }
         }
