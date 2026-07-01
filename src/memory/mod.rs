@@ -16,8 +16,8 @@ pub struct Memory {
     // External RAM (Cartridge RAM)
     external_ram: [u8; 0x8000], // up to 4 x 8KB cartridge RAM banks
 
-    // Work RAM
-    wram: [u8; 0x2000],
+    // Work RAM (CGB has 8 x 4KB banks; DMG uses the first two contiguously)
+    wram: [u8; 0x8000],
 
     // Sprite Attribute Table
     oam: [u8; 0xA0],
@@ -56,6 +56,7 @@ pub struct Memory {
     obj_palette: [u8; 64], // CGB sprite palette RAM
     bcps: u8,              // 0xFF68: BG palette index (bits 0-5) + auto-increment (bit 7)
     ocps: u8,              // 0xFF6A: OBJ palette index + auto-increment
+    svbk: usize,           // 0xFF70: which 4KB WRAM bank is mapped at 0xD000 (1-7)
 
     // Audio.
     pub apu: Apu,
@@ -68,7 +69,7 @@ impl Memory {
             rom_bank: 1,
             vram: [0; 0x4000],
             external_ram: [0; 0x8000],
-            wram: [0; 0x2000],
+            wram: [0; 0x8000],
             oam: [0; 0xA0],
             io_registers: [0; 0x80],
             hram: [0; 0x7F],
@@ -87,6 +88,7 @@ impl Memory {
             obj_palette: [0; 64],
             bcps: 0,
             ocps: 0,
+            svbk: 1,
             apu: Apu::new(),
         };
         // Post-boot register defaults (values the boot ROM leaves behind). Games
@@ -97,6 +99,19 @@ impl Memory {
         memory.io_registers[0x48] = 0xFF; // OBP0: sprite palette 0
         memory.io_registers[0x49] = 0xFF; // OBP1: sprite palette 1
         memory
+    }
+
+    // Map a WRAM or echo address to a flat index, honoring the CGB WRAM bank.
+    // 0xC000-0xCFFF = bank 0 (fixed); 0xD000-0xDFFF = bank svbk (1-7). Echo
+    // (0xE000-0xFDFF) mirrors 0xC000-0xDDFF. In DMG mode svbk stays 1, so the
+    // first 8KB is contiguous exactly as before.
+    fn wram_index(&self, address: u16) -> usize {
+        let a = if address >= 0xE000 { address - 0x2000 } else { address };
+        if a < 0xD000 {
+            (a - 0xC000) as usize
+        } else {
+            self.svbk * 0x1000 + (a - 0xD000) as usize
+        }
     }
 
     pub fn read_byte(&self, address: u16) -> u8 {
@@ -128,11 +143,9 @@ impl Memory {
                 }
             }
 
-            // Work RAM
-            0xC000..=0xDFFF => self.wram[(address - 0xC000) as usize],
-
-            // Echo RAM (mirror of Work RAM)
-            0xE000..=0xFDFF => self.wram[(address - 0xE000) as usize],
+            // Work RAM (and its echo) with CGB bank switching.
+            0xC000..=0xDFFF => self.wram[self.wram_index(address)],
+            0xE000..=0xFDFF => self.wram[self.wram_index(address)],
 
             // OAM
             0xFE00..=0xFE9F => self.oam[(address - 0xFE00) as usize],
@@ -158,6 +171,9 @@ impl Memory {
 
             // CGB: VRAM bank register (unused bits read as 1).
             0xFF4F => 0xFE | self.vram_bank as u8,
+
+            // CGB: WRAM bank register (unused bits read as 1).
+            0xFF70 => 0xF8 | self.svbk as u8,
 
             // CGB palette registers: index registers read back directly, data
             // registers read the palette-RAM byte at the current index.
@@ -249,11 +265,9 @@ impl Memory {
                 }
             }
 
-            // Work RAM
-            0xC000..=0xDFFF => self.wram[(address - 0xC000) as usize] = value,
-
-            // Echo RAM (mirror of Work RAM)
-            0xE000..=0xFDFF => self.wram[(address - 0xE000) as usize] = value,
+            // Work RAM (and its echo) with CGB bank switching.
+            0xC000..=0xDFFF => self.wram[self.wram_index(address)] = value,
+            0xE000..=0xFDFF => self.wram[self.wram_index(address)] = value,
 
             // OAM
             0xFE00..=0xFE9F => self.oam[(address - 0xFE00) as usize] = value,
@@ -281,6 +295,12 @@ impl Memory {
 
             // CGB: select the VRAM bank (bit 0).
             0xFF4F => self.vram_bank = value as usize & 1,
+
+            // CGB: select the WRAM bank at 0xD000 (bits 0-2; 0 acts as 1).
+            0xFF70 => {
+                let b = (value & 0x07) as usize;
+                self.svbk = if b == 0 { 1 } else { b };
+            }
 
             // CGB BG palette: 0xFF68 sets the index (+auto-increment bit), 0xFF69
             // writes the color byte at that index (and bumps the index if enabled).
@@ -622,6 +642,20 @@ mod tests {
         // Disable again: data is retained but gated off (reads 0xFF).
         memory.write_byte(0x0000, 0x00);
         assert_eq!(memory.read_byte(0xA000), 0xFF);
+    }
+
+    #[test]
+    fn test_wram_banking() {
+        let mut memory = Memory::new();
+        // Bank 0 (0xC000) is fixed; 0xD000 is the switchable bank.
+        memory.write_byte(0xFF70, 1); // WRAM bank 1
+        memory.write_byte(0xD000, 0x11);
+        memory.write_byte(0xFF70, 2); // WRAM bank 2
+        memory.write_byte(0xD000, 0x22);
+
+        assert_eq!(memory.read_byte(0xD000), 0x22); // bank 2
+        memory.write_byte(0xFF70, 1);
+        assert_eq!(memory.read_byte(0xD000), 0x11); // bank 1 preserved
     }
 
     #[test]
