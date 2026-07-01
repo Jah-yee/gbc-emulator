@@ -43,8 +43,8 @@ struct App {
     speed_mult: u32,
     /// Debug: show the real-time overlay.
     show_debug: bool,
-    /// Debug: lower panel shows the hex memory viewer instead of tiles/palettes.
-    hex_view: bool,
+    /// Debug: which viewer the lower panel shows (cycled with V).
+    panel_view: overlay::PanelView,
     /// Debug: first address shown by the hex viewer.
     hex_addr: u16,
 }
@@ -140,7 +140,7 @@ impl App {
                 );
             }
             Hotkey::ToggleOverlay => self.show_debug = !self.show_debug,
-            Hotkey::HexToggle => self.hex_view = !self.hex_view,
+            Hotkey::CycleView => self.panel_view = self.panel_view.next(),
             Hotkey::HexUp | Hotkey::HexDown => {} // handled before the repeat guard
             Hotkey::LoadRom => self.state = AppState::LoadRom,
             Hotkey::SaveFile => {
@@ -215,7 +215,7 @@ pub fn run(cpu: Cpu, rom_path: String) -> Cpu {
         fast_forward: false,
         speed_mult: 4,
         show_debug: false,
-        hex_view: false,
+        panel_view: overlay::PanelView::Tiles,
         hex_addr: 0xC000, // start at WRAM (game state lives here)
     };
 
@@ -301,7 +301,7 @@ pub fn run(cpu: Cpu, rom_path: String) -> Cpu {
                 canvas.copy(&texture, None, game_rect(app.show_debug)).unwrap();
                 if app.show_debug {
                     let q = audio_stream.queued_bytes().unwrap_or(0);
-                    overlay::draw(&mut canvas, &app.cpu, q, measured_pct, &mut tile_tex, app.hex_view, app.hex_addr);
+                    overlay::draw(&mut canvas, &app.cpu, q, measured_pct, &mut tile_tex, app.panel_view, app.hex_addr);
                 }
                 canvas.present();
             }
@@ -321,7 +321,7 @@ pub fn run(cpu: Cpu, rom_path: String) -> Cpu {
                 canvas.set_blend_mode(BlendMode::None);
                 if app.show_debug {
                     let q = audio_stream.queued_bytes().unwrap_or(0);
-                    overlay::draw(&mut canvas, &app.cpu, q, measured_pct, &mut tile_tex, app.hex_view, app.hex_addr);
+                    overlay::draw(&mut canvas, &app.cpu, q, measured_pct, &mut tile_tex, app.panel_view, app.hex_addr);
                 }
                 canvas.present();
                 std::thread::sleep(std::time::Duration::from_millis(16));

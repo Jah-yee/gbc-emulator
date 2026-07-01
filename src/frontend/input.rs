@@ -32,8 +32,8 @@ pub enum Hotkey {
     Mute(u8),
     /// Debug: toggle the real-time overlay.
     ToggleOverlay,
-    /// Debug: switch the lower panel between tiles/palettes and the hex viewer.
-    HexToggle,
+    /// Debug: cycle the lower panel (tiles/palettes -> hex -> OAM).
+    CycleView,
     /// Debug: scroll the hex viewer up/down.
     HexUp,
     HexDown,
@@ -76,7 +76,7 @@ impl Default for InputConfig {
             (Keycode::_7, Hotkey::Mute(2)),
             (Keycode::_8, Hotkey::Mute(3)),
             (Keycode::Tab, Hotkey::ToggleOverlay),
-            (Keycode::V, Hotkey::HexToggle),
+            (Keycode::V, Hotkey::CycleView),
             (Keycode::LeftBracket, Hotkey::HexUp),
             (Keycode::RightBracket, Hotkey::HexDown),
         ]);

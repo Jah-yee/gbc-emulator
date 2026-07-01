@@ -30,13 +30,31 @@ const DMG_SHADES: [(u8, u8, u8); 4] = [(224, 248, 208), (136, 192, 112), (52, 10
 pub const TILE_TEX_W: u32 = 128;
 pub const TILE_TEX_H: u32 = 192;
 
+/// Which viewer the lower panel shows (cycled with V).
+#[derive(Clone, Copy, PartialEq)]
+pub enum PanelView {
+    Tiles,
+    Hex,
+    Oam,
+}
+
+impl PanelView {
+    pub fn next(self) -> Self {
+        match self {
+            PanelView::Tiles => PanelView::Hex,
+            PanelView::Hex => PanelView::Oam,
+            PanelView::Oam => PanelView::Tiles,
+        }
+    }
+}
+
 pub fn draw(
     canvas: &mut Canvas<Window>,
     cpu: &Cpu,
     queued_bytes: i32,
     pct: u32,
     tile_tex: &mut Texture,
-    hex_view: bool,
+    view: PanelView,
     hex_addr: u16,
 ) {
     let px = GAME_W; // panel left edge
@@ -104,11 +122,18 @@ pub fn draw(
         draw_text(canvas, bx + bw / 2 - 3, y + mh + 4, 2, &format!("{}", i + 1), white);
     }
 
-    // --- lower panel: hex viewer, or VRAM tiles + palettes ---
+    // --- lower panel: tiles+palettes, hex viewer, or OAM list ---
     y += mh + 18;
-    if hex_view {
-        draw_hex(canvas, cpu, x0, y, hex_addr);
-        return;
+    match view {
+        PanelView::Hex => {
+            draw_hex(canvas, cpu, x0, y, hex_addr);
+            return;
+        }
+        PanelView::Oam => {
+            draw_oam(canvas, cpu, x0, y);
+            return;
+        }
+        PanelView::Tiles => {}
     }
     let col_x = x0 + 232; // palette column, right of the tile sheet
     draw_text(canvas, x0, y, 2, "VRAM TILES", dim);
@@ -164,6 +189,28 @@ fn draw_hex(canvas: &mut Canvas<Window>, cpu: &Cpu, x: i32, y0: i32, start: u16)
         draw_text(canvas, x, y, 2, &line, white);
         y += row_h;
         addr = addr.wrapping_add(8);
+    }
+}
+
+/// List the 40 OAM sprites in two columns: index, Y, X, tile, flags (raw bytes).
+fn draw_oam(canvas: &mut Canvas<Window>, cpu: &Cpu, x0: i32, y0: i32) {
+    let dim = Color::RGB(150, 150, 165);
+    let white = Color::RGB(220, 220, 220);
+    draw_text(canvas, x0, y0, 2, "OAM I  Y  X  T  F", dim);
+
+    let top = y0 + 6 * 2 + 5;
+    let row_h = 6 * 2 + 1;
+    let col_w = 170;
+    for i in 0..40usize {
+        let base = 0xFE00 + (i * 4) as u16;
+        let y = cpu.memory.read_byte(base);
+        let x = cpu.memory.read_byte(base + 1);
+        let tile = cpu.memory.read_byte(base + 2);
+        let flags = cpu.memory.read_byte(base + 3);
+        let cx = x0 + (i / 20) as i32 * col_w;
+        let cy = top + (i % 20) as i32 * row_h;
+        let line = format!("{:02X} {:02X} {:02X} {:02X} {:02X}", i, y, x, tile, flags);
+        draw_text(canvas, cx, cy, 2, &line, white);
     }
 }
 
