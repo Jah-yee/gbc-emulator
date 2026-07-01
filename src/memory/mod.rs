@@ -48,6 +48,10 @@ pub struct Memory {
     cart_type: u8,     // header byte 0x0147 (0x00 = ROM only, 0x01-0x03 = MBC1, 0x0F-0x13 = MBC3)
     ram_enabled: bool, // cartridge RAM gate (set via 0x0000-0x1FFF writes)
     ram_bank: usize,   // which 8KB cartridge-RAM bank is mapped at 0xA000
+    // MBC1 register state (bank1 = low 5 ROM bits, bank2 = 2 high ROM / RAM bits).
+    mbc1_bank1: u8,
+    mbc1_bank2: u8,
+    mbc1_mode: bool, // false = ROM banking (bank2 = high ROM bits), true = RAM banking
 
     // CGB (Game Boy Color) state.
     cgb_mode: bool,        // cartridge supports CGB (header 0x0143 bit 7)
@@ -86,6 +90,9 @@ impl Memory {
             cart_type: 0,
             ram_enabled: false,
             ram_bank: 0,
+            mbc1_bank1: 1,
+            mbc1_bank2: 0,
+            mbc1_mode: false,
             cgb_mode: false,
             vram_bank: 0,
             bg_palette: [0; 64],
@@ -230,13 +237,22 @@ impl Memory {
                 0x01..=0x03 => match address {
                     // RAM enable: low nibble == 0xA enables cartridge RAM.
                     0x0000..=0x1FFF => self.ram_enabled = value & 0x0F == 0x0A,
-                    // ROM bank (low 5 bits); a request for bank 0 maps to 1.
+                    // ROM bank low 5 bits; a request for 0 maps to 1.
                     0x2000..=0x3FFF => {
-                        let n = (value & 0x1F) as usize;
-                        self.rom_bank = if n == 0 { 1 } else { n };
+                        let n = value & 0x1F;
+                        self.mbc1_bank1 = if n == 0 { 1 } else { n };
+                        self.mbc1_update();
                     }
-                    // 0x4000-0x7FFF: upper ROM bits / RAM bank / mode (not yet).
-                    _ => {}
+                    // 2-bit register: high ROM bits (ROM mode) or RAM bank (RAM mode).
+                    0x4000..=0x5FFF => {
+                        self.mbc1_bank2 = value & 0x03;
+                        self.mbc1_update();
+                    }
+                    // Banking mode select.
+                    _ => {
+                        self.mbc1_mode = value & 0x01 != 0;
+                        self.mbc1_update();
+                    }
                 },
 
                 // MBC2: registers are all in 0x0000-0x3FFF; address bit 8 selects
@@ -434,6 +450,18 @@ impl Memory {
         self.rom_bank = 1;
         self.ram_bank = 0;
         self.ram_enabled = false;
+    }
+
+    /// Recompute the effective MBC1 ROM/RAM banks from its register state.
+    /// The switchable ROM bank is always (bank2 << 5) | bank1; the 2-bit bank2
+    /// doubles as the RAM bank only in RAM-banking mode.
+    fn mbc1_update(&mut self) {
+        self.rom_bank = ((self.mbc1_bank2 << 5) | self.mbc1_bank1) as usize;
+        self.ram_bank = if self.mbc1_mode {
+            self.mbc1_bank2 as usize
+        } else {
+            0
+        };
     }
 
     /// True if the cartridge declares Game Boy Color support (header 0x0143).
@@ -680,6 +708,20 @@ mod tests {
         assert_eq!(memory.read_byte(0xA000), 0x11);
         memory.write_byte(0x4000, 0x01);
         assert_eq!(memory.read_byte(0xA000), 0x22);
+    }
+
+    #[test]
+    fn test_mbc1_high_rom_banks() {
+        let mut memory = Memory::new();
+        let mut rom = vec![0u8; 0x4000 * 0x22]; // 34 banks so bank 0x21 exists
+        rom[0x0147] = 0x01; // MBC1
+        rom[0x4000 * 0x21] = 0x99; // bank 0x21
+        memory.load_rom(&rom);
+
+        // bank1 = 1 (low 5 bits), bank2 = 1 (high 2 bits) -> bank (1<<5)|1 = 0x21.
+        memory.write_byte(0x2000, 0x01);
+        memory.write_byte(0x4000, 0x01);
+        assert_eq!(memory.read_byte(0x4000), 0x99);
     }
 
     #[test]
