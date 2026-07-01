@@ -7,7 +7,7 @@
 
 use crate::cpu::Cpu;
 use sdl3::pixels::Color;
-use sdl3::rect::Rect;
+use sdl3::rect::FRect;
 use sdl3::render::Canvas;
 use sdl3::video::Window;
 
@@ -17,12 +17,17 @@ pub const GAME_W: i32 = 160 * 4;
 pub const GAME_H: i32 = 144 * 4;
 pub const PANEL_W: i32 = 360;
 
+/// Build a float rect from integer window coords (SDL3's renderer is float-based).
+fn r(x: i32, y: i32, w: i32, h: i32) -> FRect {
+    FRect::new(x as f32, y as f32, w as f32, h as f32)
+}
+
 /// Draw the docked debug panel to the right of the game. `queued_bytes` is the
 /// audio backlog; `pct` is the measured emulation speed.
 pub fn draw(canvas: &mut Canvas<Window>, cpu: &Cpu, queued_bytes: i32, pct: u32) {
     let px = GAME_W; // panel left edge
     canvas.set_draw_color(Color::RGB(16, 16, 20));
-    let _ = canvas.fill_rect(Rect::new(px, 0, PANEL_W as u32, GAME_H as u32));
+    let _ = canvas.fill_rect(r(px, 0, PANEL_W, GAME_H));
 
     let white = Color::RGB(235, 235, 235);
     let dim = Color::RGB(150, 150, 165);
@@ -56,9 +61,9 @@ pub fn draw(canvas: &mut Canvas<Window>, cpu: &Cpu, queued_bytes: i32, pct: u32)
     let bar_full = PANEL_W - 16;
     let frac = (queued_bytes as f32 / 65_536.0).clamp(0.0, 1.0);
     canvas.set_draw_color(Color::RGB(40, 40, 40));
-    let _ = canvas.fill_rect(Rect::new(x0, y, bar_full as u32, 10));
+    let _ = canvas.fill_rect(r(x0, y, bar_full, 10));
     canvas.set_draw_color(Color::RGB(220, 200, 40));
-    let _ = canvas.fill_rect(Rect::new(x0, y, (bar_full as f32 * frac) as u32, 10));
+    let _ = canvas.fill_rect(r(x0, y, (bar_full as f32 * frac) as i32, 10));
 
     // --- per-channel APU level meters ---
     y += 22;
@@ -71,7 +76,7 @@ pub fn draw(canvas: &mut Canvas<Window>, cpu: &Cpu, queued_bytes: i32, pct: u32)
     for (i, &lvl) in levels.iter().enumerate() {
         let bx = x0 + i as i32 * (bw + gap);
         canvas.set_draw_color(Color::RGB(40, 40, 40));
-        let _ = canvas.fill_rect(Rect::new(bx, y, bw as u32, mh as u32));
+        let _ = canvas.fill_rect(r(bx, y, bw, mh));
 
         let h = (lvl.clamp(0.0, 1.0) * mh as f32) as i32;
         let col = if cpu.memory.apu.is_muted(i) {
@@ -80,7 +85,7 @@ pub fn draw(canvas: &mut Canvas<Window>, cpu: &Cpu, queued_bytes: i32, pct: u32)
             Color::RGB(60, 220, 90)
         };
         canvas.set_draw_color(col);
-        let _ = canvas.fill_rect(Rect::new(bx, y + (mh - h), bw as u32, h as u32));
+        let _ = canvas.fill_rect(r(bx, y + (mh - h), bw, h));
 
         draw_text(canvas, bx + bw / 2 - 3, y + mh + 4, 2, &format!("{}", i + 1), white);
     }
@@ -95,12 +100,7 @@ fn draw_text(canvas: &mut Canvas<Window>, x: i32, y: i32, scale: i32, text: &str
         for (row, &bits) in glyph.iter().enumerate() {
             for col in 0..3i32 {
                 if bits & (1 << (2 - col)) != 0 {
-                    let _ = canvas.fill_rect(Rect::new(
-                        cx + col * scale,
-                        y + row as i32 * scale,
-                        scale as u32,
-                        scale as u32,
-                    ));
+                    let _ = canvas.fill_rect(r(cx + col * scale, y + row as i32 * scale, scale, scale));
                 }
             }
         }

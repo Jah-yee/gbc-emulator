@@ -12,7 +12,7 @@ use crate::cpu::Cpu;
 use input::{Hotkey, InputConfig, Pad};
 use sdl3::audio::{AudioFormat, AudioSpec};
 use sdl3::pixels::{Color, PixelFormat};
-use sdl3::rect::Rect;
+use sdl3::rect::FRect;
 use sdl3::render::BlendMode;
 use sdl3::event::Event;
 
@@ -324,9 +324,9 @@ pub fn run(cpu: Cpu, rom_path: String) -> Cpu {
 
 /// Destination rect for the game frame: a left sub-rect when the debug panel is
 /// docked, or the whole window (None) otherwise.
-fn game_rect(show_debug: bool) -> Option<Rect> {
+fn game_rect(show_debug: bool) -> Option<FRect> {
     if show_debug {
-        Some(Rect::new(0, 0, 160 * SCALE, 144 * SCALE))
+        Some(FRect::new(0.0, 0.0, (160 * SCALE) as f32, (144 * SCALE) as f32))
     } else {
         None
     }
