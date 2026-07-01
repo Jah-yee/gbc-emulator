@@ -4,6 +4,7 @@ use crate::memory::Memory;
 
 // The CPU registers
 #[derive(Clone)]
+#[cfg_attr(feature = "savestate", derive(bincode::Encode, bincode::Decode))]
 pub struct Registers {
     pub a: u8,
     pub f: u8,
@@ -186,6 +187,7 @@ impl Register {
 }
 
 #[derive(Clone)]
+#[cfg_attr(feature = "savestate", derive(bincode::Encode, bincode::Decode))]
 pub struct Cpu {
     pub registers: Registers,
     pub pc: u16, // Program Counter

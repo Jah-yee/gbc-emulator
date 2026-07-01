@@ -23,6 +23,7 @@ const NOISE_DIVISORS: [i32; 8] = [8, 16, 32, 48, 64, 80, 96, 112];
 
 /// A square-wave channel. Ch1 also uses the sweep fields; Ch2 leaves them zero.
 #[derive(Default, Clone)]
+#[cfg_attr(feature = "savestate", derive(bincode::Encode, bincode::Decode))]
 struct Square {
     enabled: bool,
 
@@ -179,6 +180,7 @@ impl Square {
 
 /// Channel 3: plays 32 4-bit samples from wave RAM.
 #[derive(Default, Clone)]
+#[cfg_attr(feature = "savestate", derive(bincode::Encode, bincode::Decode))]
 struct Wave {
     enabled: bool,
     dac_on: bool,
@@ -255,6 +257,7 @@ impl Wave {
 
 /// Channel 4: pseudo-random noise from a linear-feedback shift register.
 #[derive(Default, Clone)]
+#[cfg_attr(feature = "savestate", derive(bincode::Encode, bincode::Decode))]
 struct Noise {
     enabled: bool,
     lfsr: u16,
@@ -363,6 +366,7 @@ impl Noise {
 }
 
 #[derive(Clone)]
+#[cfg_attr(feature = "savestate", derive(bincode::Encode, bincode::Decode))]
 pub struct Apu {
     ch1: Square,
     ch2: Square,

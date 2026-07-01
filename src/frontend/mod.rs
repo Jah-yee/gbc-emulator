@@ -104,8 +104,26 @@ impl App {
             }
             Hotkey::FastForward => self.fast_forward = true,
             Hotkey::LoadRom => self.state = AppState::LoadRom,
-            // file save lands in the next step.
-            _ => {}
+            Hotkey::SaveFile => {
+                let path = format!("{}.state", self.rom_path);
+                match std::fs::write(&path, crate::savestate::to_bytes(&self.cpu)) {
+                    Ok(()) => eprintln!("saved state: {path}"),
+                    Err(e) => eprintln!("save state failed: {e}"),
+                }
+            }
+            Hotkey::LoadFile => {
+                let path = format!("{}.state", self.rom_path);
+                match std::fs::read(&path) {
+                    Ok(bytes) => match crate::savestate::from_bytes(&bytes) {
+                        Some(cpu) => {
+                            self.cpu = cpu;
+                            eprintln!("loaded state: {path}");
+                        }
+                        None => eprintln!("state incompatible or corrupt: {path}"),
+                    },
+                    Err(e) => eprintln!("load state failed: {e}"),
+                }
+            }
         }
     }
 }

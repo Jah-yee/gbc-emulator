@@ -10,6 +10,9 @@ mod blargg_tests;
 #[cfg(feature = "gui")]
 mod frontend;
 
+#[cfg(feature = "savestate")]
+mod savestate;
+
 use cpu::Cpu;
 
 fn main() {

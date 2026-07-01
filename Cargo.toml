@@ -7,10 +7,15 @@ edition = "2024"
 # SDL3 is the display/input/audio frontend. Optional + only pulled in by the
 # `gui` feature, so `cargo test`/`cargo build` keep the core dep-free.
 sdl3 = { version = "0.18", optional = true }
+# bincode powers file save states (whole-machine snapshots). Its native derive
+# handles arbitrarily-sized arrays (serde only does <=32), and it's pure Rust.
+bincode = { version = "2", optional = true }
 
 [features]
 # Enable the windowed frontend: `cargo run --features gui`
-gui = ["dep:sdl3"]
+gui = ["dep:sdl3", "savestate"]
 # Self-contained binary: build+static-link SDL3 from source (needs cmake + a C
 # toolchain). Opt-in so normal builds can use a system libSDL3.
 gui-static = ["gui", "sdl3/build-from-source-static"]
+# Whole-machine save states to file (pure Rust; testable without the GUI).
+savestate = ["dep:bincode"]

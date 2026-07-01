@@ -3,6 +3,7 @@
 use crate::apu::Apu;
 
 #[derive(Clone)]
+#[cfg_attr(feature = "savestate", derive(bincode::Encode, bincode::Decode))]
 pub struct Memory {
     // The entire cartridge ROM (all banks, however big).
     rom: Vec<u8>,

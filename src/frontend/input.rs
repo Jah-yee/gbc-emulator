@@ -23,6 +23,7 @@ pub enum Hotkey {
     QuickSave,
     QuickLoad,
     SaveFile,
+    LoadFile,
     LoadRom,
     FastForward,
 }
@@ -51,6 +52,7 @@ impl Default for InputConfig {
             (Keycode::F5, Hotkey::QuickSave),
             (Keycode::F9, Hotkey::QuickLoad),
             (Keycode::F2, Hotkey::SaveFile),
+            (Keycode::F3, Hotkey::LoadFile),
             (Keycode::O, Hotkey::LoadRom),
             (Keycode::Space, Hotkey::FastForward),
         ]);
