@@ -32,6 +32,8 @@ struct App {
     dpad: u8,
     buttons: u8,
     should_quit: bool,
+    /// In-memory quick save slot (F5 saves, F9 restores).
+    quick_slot: Option<Box<Cpu>>,
 }
 
 impl App {
@@ -85,7 +87,17 @@ impl App {
                     AppState::Paused => AppState::Playing,
                 };
             }
-            // save states / load-ROM / fast-forward land in later steps.
+            Hotkey::QuickSave => {
+                self.quick_slot = Some(Box::new(self.cpu.clone()));
+                eprintln!("quick save");
+            }
+            Hotkey::QuickLoad => {
+                if let Some(slot) = &self.quick_slot {
+                    self.cpu = (**slot).clone();
+                    eprintln!("quick load");
+                }
+            }
+            // load-ROM / file save / fast-forward land in later steps.
             _ => {}
         }
     }
@@ -131,6 +143,7 @@ pub fn run(cpu: Cpu, rom_path: String) -> Cpu {
         dpad: 0,
         buttons: 0,
         should_quit: false,
+        quick_slot: None,
     };
 
     // Enable alpha blending so the pause overlay can dim the frame.

@@ -2,6 +2,7 @@
 
 use crate::apu::Apu;
 
+#[derive(Clone)]
 pub struct Memory {
     // The entire cartridge ROM (all banks, however big).
     rom: Vec<u8>,

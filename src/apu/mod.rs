@@ -22,7 +22,7 @@ const DUTY: [[u8; 8]; 4] = [
 const NOISE_DIVISORS: [i32; 8] = [8, 16, 32, 48, 64, 80, 96, 112];
 
 /// A square-wave channel. Ch1 also uses the sweep fields; Ch2 leaves them zero.
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct Square {
     enabled: bool,
 
@@ -178,7 +178,7 @@ impl Square {
 }
 
 /// Channel 3: plays 32 4-bit samples from wave RAM.
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct Wave {
     enabled: bool,
     dac_on: bool,
@@ -254,7 +254,7 @@ impl Wave {
 }
 
 /// Channel 4: pseudo-random noise from a linear-feedback shift register.
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct Noise {
     enabled: bool,
     lfsr: u16,
@@ -362,6 +362,7 @@ impl Noise {
     }
 }
 
+#[derive(Clone)]
 pub struct Apu {
     ch1: Square,
     ch2: Square,

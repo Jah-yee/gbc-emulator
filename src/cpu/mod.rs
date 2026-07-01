@@ -3,6 +3,7 @@
 use crate::memory::Memory;
 
 // The CPU registers
+#[derive(Clone)]
 pub struct Registers {
     pub a: u8,
     pub f: u8,
@@ -184,6 +185,7 @@ impl Register {
     }
 }
 
+#[derive(Clone)]
 pub struct Cpu {
     pub registers: Registers,
     pub pc: u16, // Program Counter
