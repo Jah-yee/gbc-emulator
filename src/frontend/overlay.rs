@@ -36,6 +36,8 @@ pub fn draw(
     queued_bytes: i32,
     pct: u32,
     tile_tex: &mut Texture,
+    hex_view: bool,
+    hex_addr: u16,
 ) {
     let px = GAME_W; // panel left edge
     canvas.set_draw_color(Color::RGB(16, 16, 20));
@@ -102,8 +104,12 @@ pub fn draw(
         draw_text(canvas, bx + bw / 2 - 3, y + mh + 4, 2, &format!("{}", i + 1), white);
     }
 
-    // --- VRAM tile viewer (left) + palettes (right column) ---
+    // --- lower panel: hex viewer, or VRAM tiles + palettes ---
     y += mh + 18;
+    if hex_view {
+        draw_hex(canvas, cpu, x0, y, hex_addr);
+        return;
+    }
     let col_x = x0 + 232; // palette column, right of the tile sheet
     draw_text(canvas, x0, y, 2, "VRAM TILES", dim);
     draw_text(canvas, col_x, y, 2, "PALETTES", dim);
@@ -138,6 +144,27 @@ pub fn draw(
     let _ = canvas.copy(tile_tex, None, FRect::new(x0 as f32, y as f32, sheet_w, avail));
 
     draw_palettes(canvas, cpu, col_x, y);
+}
+
+/// Draw a scrollable hex dump (8 bytes/row) starting at `start`, filling the
+/// lower panel. Font has no lowercase, so there's no ASCII column.
+fn draw_hex(canvas: &mut Canvas<Window>, cpu: &Cpu, x: i32, y0: i32, start: u16) {
+    let dim = Color::RGB(150, 150, 165);
+    let white = Color::RGB(220, 220, 220);
+    draw_text(canvas, x, y0, 2, &format!("MEM {:04X}", start), dim);
+
+    let mut y = y0 + 6 * 2 + 5;
+    let row_h = 6 * 2 + 1;
+    let mut addr = start;
+    while y + 10 <= GAME_H {
+        let mut line = format!("{:04X} ", addr);
+        for i in 0..8u16 {
+            line.push_str(&format!("{:02X} ", cpu.memory.read_byte(addr.wrapping_add(i))));
+        }
+        draw_text(canvas, x, y, 2, &line, white);
+        y += row_h;
+        addr = addr.wrapping_add(8);
+    }
 }
 
 /// Draw palette swatches in a column at (x, y0): CGB's 8 BG + 8 OBJ palettes
